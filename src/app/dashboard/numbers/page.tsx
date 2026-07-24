@@ -1,161 +1,191 @@
-"use client"
-
-import { useState } from "react"
-import { PhoneCall, Plus, PhoneIncoming, PhoneOutgoing, Search, MoreHorizontal } from "lucide-react"
+import Link from "next/link"
+import { PhoneCall, PhoneIncoming, PhoneOutgoing, BookOpen } from "lucide-react"
 import { PageContainer, PageHeader, Section } from "@/components/ui/section"
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
+import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Stat } from "@/components/ui/stat"
+import { requireServerSupabase } from "@/lib/supabase"
 import { fmtRelative } from "@/lib/utils"
 
-interface PhoneNumber {
+export const dynamic = "force-dynamic"
+
+type NumberRow = {
   id: string
-  e164: string
+  phone_number: string
+  country: string | null
   provider: string
-  capabilities: string
-  isActive: boolean
-  createdAt: string
+  lifecycle_status: string
+  entitlement_expires_at: string | null
+  inbound_seconds_balance: number
+  created_at: string
 }
 
-// Placeholder data — real fetch lands when Telnyx adapter is wired.
-const STUB_NUMBERS: PhoneNumber[] = []
-const STUB_CALLS: {
-  id: string; direction: "inbound" | "outbound"; from: string; to: string
-  status: string; durationSec?: number; startedAt: string
-}[] = []
+type CallRow = {
+  id: string
+  direction: "inbound" | "outbound"
+  from_number: string | null
+  to_number: string | null
+  status: string
+  duration_seconds: number | null
+  started_at: string | null
+  created_at: string
+}
 
-export default function NumbersPage() {
-  const [query, setQuery] = useState("")
-  const numbers = STUB_NUMBERS.filter((n) => n.e164.includes(query))
-  const calls = STUB_CALLS
+async function phoneData() {
+  const db = requireServerSupabase()
+  const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const [numbersResult, callsResult] = await Promise.all([
+    db
+      .from("v1_phone_numbers")
+      .select("id,phone_number,country,provider,lifecycle_status,entitlement_expires_at,inbound_seconds_balance,created_at")
+      .order("created_at", { ascending: false })
+      .limit(250),
+    db
+      .from("v1_calls")
+      .select("id,direction,from_number,to_number,status,duration_seconds,started_at,created_at")
+      .gte("created_at", weekStart)
+      .order("created_at", { ascending: false })
+      .limit(250),
+  ])
+  if (numbersResult.error) throw new Error(numbersResult.error.message)
+  if (callsResult.error) throw new Error(callsResult.error.message)
+  return {
+    numbers: (numbersResult.data ?? []) as NumberRow[],
+    calls: (callsResult.data ?? []) as CallRow[],
+  }
+}
+
+export default async function NumbersPage() {
+  let numbers: NumberRow[] = []
+  let calls: CallRow[] = []
+  let loadError: string | null = null
+  try {
+    const data = await phoneData()
+    numbers = data.numbers
+    calls = data.calls
+  } catch (error) {
+    loadError = error instanceof Error ? error.message : "Phone data could not be loaded"
+  }
+
+  const activeStates = new Set(["active", "renewal_due", "renewal_authorized"])
+  const activeNumbers = numbers.filter((number) => activeStates.has(number.lifecycle_status))
+  const totalMinutes = calls.reduce((sum, call) => sum + Number(call.duration_seconds ?? 0), 0) / 60
 
   return (
     <PageContainer>
       <PageHeader
-        title="Numbers & Calls"
-        description="Real phone numbers for your agents. Place calls, receive inbound via webhook, retrieve STT transcripts."
+        title="AgentPhone operations"
+        description="Private owner view of real numbers, entitlements, inbound balances, and provider call state."
         actions={
-          <Button size="md">
-            <Plus /> Buy number
+          <Button size="md" asChild>
+            <Link href="/docs#phone">
+              <BookOpen /> Agent guide
+            </Link>
           </Button>
         }
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Stat label="Active numbers" value={numbers.length} format={(n) => String(Math.round(n))} icon={<PhoneCall />} />
-        <Stat label="Calls this week" value={0} format={(n) => String(Math.round(n))} icon={<PhoneOutgoing />} />
-        <Stat label="Minutes talked" value={0} format={(n) => n.toFixed(1)} suffix="min" icon={<PhoneIncoming />} />
+      {loadError ? (
+        <Card className="border-negative/30 bg-negative/5 p-5">
+          <p className="text-sm font-medium text-negative">Phone data is unavailable</p>
+          <p className="mt-1 text-xs text-muted">{loadError}</p>
+        </Card>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <Stat label="Active numbers" value={activeNumbers.length} format={(n) => String(Math.round(n))} icon={<PhoneCall />} />
+        <Stat label="Calls · last 7 days" value={calls.length} format={(n) => String(Math.round(n))} icon={<PhoneOutgoing />} />
+        <Stat label="Connected time" value={totalMinutes} format={(n) => n.toFixed(1)} suffix="min" icon={<PhoneIncoming />} />
       </div>
 
-      <Section title="Your numbers" description="Numbers you own via the current provider.">
+      <Section title="Numbers" description="The database state used to authorize every AgentPhone operation.">
         <Card className="overflow-hidden">
-          <div className="flex items-center gap-3 p-4 border-b border-line">
-            <div className="relative w-full max-w-sm">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted" />
-              <Input
-                placeholder="Search by e164…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                className="pl-8 h-8 text-[13px]"
-              />
-            </div>
-            <div className="flex-1" />
-            <span className="text-[12px] text-muted tabular">
-              {numbers.length} number{numbers.length === 1 ? "" : "s"}
-            </span>
-          </div>
           {numbers.length === 0 ? (
             <EmptyState
               icon={<PhoneCall />}
-              title="No numbers yet"
-              description="Buy your first real phone number. The provisioning call returns an accessToken that unlocks every other endpoint."
-              action={
-                <Button>
-                  <Plus /> Buy your first number
-                </Button>
-              }
+              title="No AgentPhone numbers"
+              description="A row appears here only after a real paid provisioning request succeeds."
             />
           ) : (
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="border-b border-line text-[11px] uppercase tracking-[0.06em] text-muted">
-                  <th className="text-left font-medium px-5 py-2.5">Number</th>
-                  <th className="text-left font-medium px-5 py-2.5">Provider</th>
-                  <th className="text-left font-medium px-5 py-2.5">Capabilities</th>
-                  <th className="text-left font-medium px-5 py-2.5">Acquired</th>
-                  <th className="text-right font-medium px-5 py-2.5">Status</th>
-                  <th className="w-8 px-2 py-2.5" />
-                </tr>
-              </thead>
-              <tbody>
-                {numbers.map((n) => (
-                  <tr key={n.id} className="border-b border-line last:border-0 hover:bg-elevated/50 transition-colors">
-                    <td className="px-5 py-3 font-mono tabular text-text font-medium">{n.e164}</td>
-                    <td className="px-5 py-3 text-text-2 capitalize">{n.provider}</td>
-                    <td className="px-5 py-3">
-                      <div className="flex gap-1">
-                        {n.capabilities.split(",").filter(Boolean).map((c) => (
-                          <Badge key={c} variant="outline">{c.trim()}</Badge>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 text-text-2 tabular">{fmtRelative(n.createdAt)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <Badge dot variant={n.isActive ? "positive" : "muted"}>
-                        {n.isActive ? "Active" : "Released"}
-                      </Badge>
-                    </td>
-                    <td className="px-1 py-3">
-                      <Button variant="ghost" size="icon-sm"><MoreHorizontal /></Button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-[13px]">
+                <thead>
+                  <tr className="border-b border-line text-[11px] uppercase tracking-[0.06em] text-muted">
+                    <th className="px-5 py-2.5 text-left font-medium">Number</th>
+                    <th className="px-5 py-2.5 text-left font-medium">Market</th>
+                    <th className="px-5 py-2.5 text-left font-medium">Provider</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Inbound balance</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Entitlement expiry</th>
+                    <th className="px-5 py-2.5 text-right font-medium">State</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {numbers.map((number) => (
+                    <tr key={number.id} className="border-b border-line last:border-0 hover:bg-elevated/50">
+                      <td className="px-5 py-3 font-mono font-medium tabular text-text">{number.phone_number}</td>
+                      <td className="px-5 py-3 text-text-2">{number.country ?? "—"}</td>
+                      <td className="px-5 py-3 text-text-2">{number.provider}</td>
+                      <td className="px-5 py-3 text-right font-mono tabular text-text">
+                        {(Number(number.inbound_seconds_balance) / 60).toFixed(1)} min
+                      </td>
+                      <td className="px-5 py-3 text-right text-text-2">
+                        {number.entitlement_expires_at ? fmtRelative(number.entitlement_expires_at) : "—"}
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <Badge dot variant={activeStates.has(number.lifecycle_status) ? "positive" : "muted"}>
+                          {number.lifecycle_status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
       </Section>
 
-      <Section title="Recent calls" description="Inbound and outbound, across all your numbers.">
+      <Section title="Calls · last 7 days" description="Real provider call records; recordings are intentionally not collected.">
         <Card className="overflow-hidden">
           {calls.length === 0 ? (
             <EmptyState
               icon={<PhoneOutgoing />}
-              title="No calls yet"
-              description="Once you buy a number and place your first call, it lands here with live status."
+              title="No calls in this period"
+              description="Inbound and outbound calls appear here as AgentPhone events are verified."
             />
           ) : (
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="border-b border-line text-[11px] uppercase tracking-[0.06em] text-muted">
-                  <th className="w-8 px-2 py-2.5" />
-                  <th className="text-left font-medium px-5 py-2.5">From</th>
-                  <th className="text-left font-medium px-5 py-2.5">To</th>
-                  <th className="text-left font-medium px-5 py-2.5">Status</th>
-                  <th className="text-right font-medium px-5 py-2.5">Duration</th>
-                  <th className="text-right font-medium px-5 py-2.5">Started</th>
-                </tr>
-              </thead>
-              <tbody>
-                {calls.map((c) => (
-                  <tr key={c.id} className="border-b border-line last:border-0 hover:bg-elevated/50 transition-colors">
-                    <td className="pl-4 py-3 text-text-2">
-                      {c.direction === "inbound" ? <PhoneIncoming className="size-3.5" /> : <PhoneOutgoing className="size-3.5" />}
-                    </td>
-                    <td className="px-5 py-3 font-mono tabular text-text">{c.from}</td>
-                    <td className="px-5 py-3 font-mono tabular text-text-2">{c.to}</td>
-                    <td className="px-5 py-3"><Badge variant="outline">{c.status}</Badge></td>
-                    <td className="px-5 py-3 text-right tabular text-text">
-                      {c.durationSec ? `${Math.floor(c.durationSec / 60)}m ${c.durationSec % 60}s` : "—"}
-                    </td>
-                    <td className="px-5 py-3 text-right text-text-2 tabular">{fmtRelative(c.startedAt)}</td>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] text-[13px]">
+                <thead>
+                  <tr className="border-b border-line text-[11px] uppercase tracking-[0.06em] text-muted">
+                    <th className="px-5 py-2.5 text-left font-medium">Direction</th>
+                    <th className="px-5 py-2.5 text-left font-medium">From</th>
+                    <th className="px-5 py-2.5 text-left font-medium">To</th>
+                    <th className="px-5 py-2.5 text-left font-medium">Status</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Duration</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Started</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {calls.map((call) => (
+                    <tr key={call.id} className="border-b border-line last:border-0 hover:bg-elevated/50">
+                      <td className="px-5 py-3 text-text-2">{call.direction}</td>
+                      <td className="px-5 py-3 font-mono tabular text-text">{call.from_number ?? "—"}</td>
+                      <td className="px-5 py-3 font-mono tabular text-text-2">{call.to_number ?? "—"}</td>
+                      <td className="px-5 py-3"><Badge variant="outline">{call.status}</Badge></td>
+                      <td className="px-5 py-3 text-right font-mono tabular text-text">
+                        {call.duration_seconds === null ? "—" : `${call.duration_seconds}s`}
+                      </td>
+                      <td className="px-5 py-3 text-right text-text-2">
+                        {fmtRelative(call.started_at ?? call.created_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
       </Section>

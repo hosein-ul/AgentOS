@@ -140,7 +140,7 @@ export async function sendAgentEmail(
     .from("Email")
     .insert({
       agentId,
-      messageId: (result as any).messageId ?? null,
+      messageId: result.messageId ?? null,
       from: agent.emailAddress,
       to: toStr,
       cc: opts?.cc ? (Array.isArray(opts.cc) ? opts.cc.join(", ") : opts.cc) : null,
@@ -378,11 +378,10 @@ export async function forwardEmail(emailId: string, to: string | string[], note?
     ? `<p>${note}</p><hr><p><b>From:</b> ${original.from}<br><b>To:</b> ${original.to}<br><b>Subject:</b> ${original.subject}</p>${original.html || `<pre>${original.body}</pre>`}`
     : `<hr><p><b>From:</b> ${original.from}<br><b>To:</b> ${original.to}<br><b>Subject:</b> ${original.subject}</p>${original.html || `<pre>${original.body}</pre>`}`
 
-  const attachments = (original.attachments ?? []).map((a: any) => ({
-    filename: a.filename,
-    content: a.content,
-    type: a.contentType,
-  }))
+  const attachments = (original.attachments ?? []).map((attachment: unknown) => {
+    const item = attachment as { filename?: string; content?: string; contentType?: string }
+    return { filename: item.filename ?? "attachment", content: item.content ?? "", type: item.contentType }
+  }).filter((attachment: { content: string }) => attachment.content)
 
   return sendAgentEmail(original.agentId, to, `Fwd: ${original.subject}`, fwdBody, {
     html: fwdHtml,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams } from "next/navigation"
 import Link from "next/link"
 
@@ -48,14 +48,14 @@ export default function AgentDetailPage() {
   const [sending, setSending] = useState(false)
   const toRef = useRef<HTMLInputElement>(null)
 
-  const fetchAgent = () => {
+  const fetchAgent = useCallback(() => {
     fetch(`/api/agents/${params.id}`)
       .then((r) => r.json())
       .then((d) => { if (d.agent) setAgent(d.agent) })
       .finally(() => setLoading(false))
-  }
+  }, [params.id])
 
-  useEffect(() => { fetchAgent() }, [params.id])
+  useEffect(() => { fetchAgent() }, [fetchAgent])
 
   const handleSend = async () => {
     if (!composeTo || !composeSubject || !composeBody) return

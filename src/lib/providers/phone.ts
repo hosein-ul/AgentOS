@@ -182,17 +182,6 @@ export class TwilioPhoneProvider implements PhoneProvider {
 
 // ─── Selector ──────────────────────────────────────────────────────────────────
 
-let cached: PhoneProvider | null = null
 export function getPhoneProvider(): PhoneProvider {
-  if (cached) return cached
-  const kind = (process.env.PHONE_PROVIDER || "mock").toLowerCase()
-  if (kind === "twilio" && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-    cached = new TwilioPhoneProvider({
-      accountSid: process.env.TWILIO_ACCOUNT_SID!,
-      authToken: process.env.TWILIO_AUTH_TOKEN!,
-    })
-  } else {
-    cached = new MockPhoneProvider()
-  }
-  return cached
+  throw new Error("Legacy phone providers are retired; use the real AgentPhone /api/v1 service")
 }
