@@ -136,11 +136,6 @@ export class MockDomainProvider implements DomainProvider {
 
 // ─── Selector ──────────────────────────────────────────────────────────────────
 
-let cached: DomainProvider | null = null
 export function getDomainProvider(): DomainProvider {
-  if (cached) return cached
-  // Real registrar adapters (Namecheap, Porkbun, GoDaddy, Cloudflare Registrar)
-  // would branch here based on env. For MVP we ship the deterministic mock.
-  cached = new MockDomainProvider()
-  return cached
+  throw new Error("Legacy mock domain provider is retired; v1 domain remains fail-closed until Namecheap is production-ready")
 }

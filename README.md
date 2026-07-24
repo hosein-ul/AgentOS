@@ -1,541 +1,359 @@
 # AgentOS
 
-Real communication and identity infrastructure for AI agents. Give any agent its own email address, phone number, and domain — send email, place calls, register DNS, all through a single REST API.
+AgentOS is a multi-tenant Agent Service Provider for the OKX.AI marketplace. Autonomous agents receive real email and phone capabilities through a versioned REST API. Each paid business operation has a fixed AgentOS price and is settled through the OKX Agent Payments Protocol on X Layer.
 
-Built as an **ASP (Agent Service Provider)** on OKX.AI.
+The public surface is `/api/v1`. It is not MCP. Provider failures remain failures; v1 never fabricates email, phone, payment, or domain success.
 
-The initial services are:
+## Why AgentOS exists
 
-- **Email** — send/receive mail, threads, templates
-- **Phone** — buy real numbers, place outbound calls, receive inbound calls, transcripts
-- **Domain** — search availability, register domains, manage DNS
+Agents need durable identities and communication infrastructure, not one-off tool demos. AgentOS gives a wallet-owned agent:
 
-The Email service is the most mature and preserves the original AgentMail behavior. Phone and Domain are new MVP services built on the same architecture.
+- real Resend mailboxes and inbound/outbound email;
+- real AgentPhone numbers and live agent-controlled conversations;
+- fixed outbound packages and prepaid inbound allowance;
+- durable lifecycle notifications with WebSocket acceleration;
+- one wallet-bound credential and strict tenant isolation;
+- discoverable contracts suitable for OKX.AI ASP/A2MCP listing.
 
----
+## Current state
 
-## What it is
+| Area | Provider | Repository implementation | Deployed verification |
+| --- | --- | --- | --- |
+| Email | Resend | v1 mailbox/send/query and verified inbound event flow implemented | Requires v1 migrations and provider E2E |
+| Phone | AgentPhone | v1 number/call/renew/release/transcript and durable jobs implemented | Requires v1 migrations, worker, gateway, and funded provider E2E |
+| Domain | Namecheap adapter | real adapter exists, public v1 route is fail-closed | Not marketplace-ready |
+| Realtime | Separate Node WebSocket gateway + Supabase | gateway, replay, delivery lease, and socket ack implemented | Not yet deployed |
+| Scheduling | Supabase jobs + separate worker + daily Vercel sweep | implemented in repository | AgentOS is not linked to a connected Vercel project |
 
-AI agents need to communicate via email — to send alerts, receive confirmations, handle replies, and maintain ongoing conversations. AgentMail gives each agent a real, isolated email address backed by full SMTP delivery (Resend), real MX records, and RFC 5322-compliant threading.
-
-Every agent gets their own exclusive mailbox. Emails never cross between agents.
-
-```
-trading-bot@yourdomain.com     → isolated inbox, send/receive
-customer-agent@yourdomain.com  → completely separate mailbox
-research-agent@yourdomain.com  → no shared state with others
-```
-
----
+The connected Supabase `agentmail` project now has all five local v1 migrations applied. All public tables have RLS enabled, `anon/authenticated` have no direct public-table grants, and the two security-definer claim functions are executable only by `service_role`. The v1 tables are empty until real provisioning begins. This repository must not be described as a live production service until the app, gateway, worker, secrets, webhooks, and paid E2E tests are complete.
 
 ## Architecture
 
-```
-                        ┌─────────────────────────────────────┐
-                        │            AgentMail                 │
-                        │                                      │
-  OKX.AI Agents ───────▶│  POST /api/asp/**  (x402 payment)   │
-                        │           │                          │
-  REST API clients ────▶│  /api/*   │                          │
-                        │           ▼                          │
-                        │  ┌─────────────────┐                │
-                        │  │  email-service  │                │
-                        │  │  (core logic)   │                │
-                        │  └────────┬────────┘                │
-                        │           │                          │
-                        │    ┌──────┴──────┐                  │
-                        │    │             │                   │
-                        │    ▼             ▼                   │
-                        │  Supabase    Resend                  │
-                        │  (storage)  (SMTP delivery)          │
-                        └─────────────────────────────────────┘
-                                    ▲
-                         Resend inbound webhook
-                         POST /api/webhooks/inbound
-                         (real incoming emails → agent inbox)
+```mermaid
+flowchart LR
+  A["Autonomous agent"] -->|"REST + x402"| V["Next.js API on Vercel"]
+  A <-->|"private WSS"| G["Realtime gateway"]
+  V --> S["Supabase Postgres"]
+  G --> S
+  W["Continuous durable worker"] -->|"short authenticated batches"| V
+  C["Vercel Cron: daily safety sweep"] --> V
+  V --> R["Resend"]
+  R -->|"verified webhook"| V
+  V --> P["AgentPhone"]
+  P -->|"signed live webhook"| V
+  V -->|"signed callback"| A
+  V -. "disabled until static egress" .-> N["Namecheap"]
 ```
 
----
+Postgres is the source of truth for tenants, token hashes, payment/idempotency ledgers, provider resources, events, entitlements, and jobs. WebSocket delivery never replaces durable persistence.
 
-## Stack
+## Repository structure
 
-| Layer | Technology |
-|---|---|
-| Framework | Next.js 16 (App Router, TypeScript) |
-| Styling | Tailwind CSS v4 |
-| Database | Supabase (PostgreSQL) |
-| Email delivery | Resend (SMTP + inbound webhooks) |
-| Auth | API key (`am_...` bearer token) |
-| OKX.AI payments | x402 protocol, USDT0 on X Layer |
-
----
-
-## Database schema
-
-```
-User
- └─ id, email, name, createdAt
-
-Agent
- └─ id, name, emailAddress (UNIQUE), userId, webhookUrl, isActive, createdAt
-    Each agent owns exactly one address. Inbox queries always filter by agentId.
-
-Email
- └─ id, agentId (FK→Agent), from, to, subject, body, html,
-    direction ("inbound"|"outbound"), threadId, isRead, status, createdAt
-
-ApiKey
- └─ id, key (UNIQUE, am_...), name, userId, isActive, lastUsed, createdAt
-
-EmailTemplate
- └─ id, name, subject, body, userId, createdAt
+```text
+src/app/api/v1/                 Public REST, provider webhooks, internal worker
+src/lib/v1/                     Auth, x402, providers, catalog, events, jobs
+src/app/docs/                   Deployed Markdown guide
+src/app/llms.txt/               Machine-oriented agent guide
+src/app/openapi.json/           OpenAPI 3.1
+services/realtime-gateway/      Persistent WebSocket server
+services/durable-worker/        Continuously running job trigger
+supabase/migrations/            Ordered, reviewed database migrations
+tests/                          Node tests
+docs.md                         Source-controlled operational/API guide
+vercel.json                     Daily safety cron only
 ```
 
----
+Legacy `/api/asp/**` and older `/api/**` code remains for private owner tooling and migration reference. `src/proxy.ts` returns 410 to public callers. It is not the production marketplace API.
 
-## REST API
+## Canonical discovery
 
-### Authentication
+- `GET /api/v1`
+- `GET /api/v1/services`
+- `GET /api/v1/services/{serviceId}`
+- `GET /openapi.json`
+- `GET /llms.txt`
+- `GET /docs`
 
-All requests require a bearer token:
+The TypeScript service catalog is the source for service IDs, fixed prices, authentication, start-here status, OKX registration intent, inputs, errors, and next actions. Discovery and OpenAPI attach those values directly.
 
-```
-Authorization: Bearer am_live_xxxxxxxxxxxx
-```
+## Authentication and wallet isolation
 
-Generate a key from the dashboard (`/dashboard/api-keys`) or via `POST /api/api-keys`.
+There is no paid token endpoint.
 
----
+1. A new wallet calls an available provisioning/start-here endpoint without `Authorization`.
+2. AgentOS returns a standard x402 challenge.
+3. The agent obtains explicit payment approval and replays the identical request with `PAYMENT-SIGNATURE` and `Idempotency-Key`.
+4. AgentOS verifies the payer and request binding, settles once, performs the real provider operation, and returns a one-time plaintext `at_v1_...` token.
+5. The token has no automatic expiry and authenticates every AgentOS resource owned by that wallet.
 
-### Agents
+Every secondary paid endpoint requires the token before payment preparation. Missing auth returns HTTP 428 `ONBOARDING_REQUIRED` with the correct start-here service and discovery links. Resource-ID ownership is checked before payment preparation where possible. The x402 payer must equal the bearer token wallet.
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/api/agents` | Create a new agent mailbox |
-| GET | `/api/agents` | List all agents |
-| GET | `/api/agents/:id` | Get a single agent |
-| DELETE | `/api/agents/:id` | Delete an agent |
+Isolation controls:
 
-**Create agent:**
-```bash
-curl -X POST https://YOUR_DOMAIN/api/agents \
-  -H "Authorization: Bearer am_..." \
-  -d '{ "name": "trading-bot", "webhookUrl": "https://you.com/hook" }'
-```
-```json
-{
-  "id": "agt_01j8...",
-  "name": "trading-bot",
-  "emailAddress": "trading-bot@yourdomain.com",
-  "isActive": true
-}
-```
+- random tokens stored only as SHA-256 hashes;
+- no trusted caller-supplied tenant ID;
+- tenant condition on every server resource query;
+- unique provider identifiers;
+- tenant-bound payment and idempotency ledgers;
+- RLS plus explicit grants/revokes;
+- short-lived separate realtime credentials;
+- encrypted callback/provider secrets.
 
----
+## Fixed pricing
 
-### Email
+Public prices never change automatically with provider pricing.
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/api/emails/send` | Send email from an agent |
-| GET | `/api/emails/inbox?agentId=...&limit=20` | List agent inbox |
-| GET | `/api/emails/:id` | Get single email |
+| Service | Fixed price |
+| --- | ---: |
+| Create mailbox | 0.25 USDT |
+| Update mailbox | 0.01 USDT |
+| Delete mailbox | 0.01 USDT |
+| Send email | 0.02 USDT |
+| US number / 30 days | 5.00 USDT |
+| Canada number / 30 days | 5.00 USDT |
+| Renew number / 30 days | 5.00 USDT |
+| Outbound call / up to 1 minute | 0.30 USDT |
+| Outbound call / up to 5 minutes | 1.50 USDT |
+| Extend active call / 1 minute | 0.30 USDT |
+| Add 10 inbound minutes | 3.00 USDT |
+| Reads, event inbox, release | free authenticated |
 
-**Send email:**
-```bash
-curl -X POST https://YOUR_DOMAIN/api/emails/send \
-  -H "Authorization: Bearer am_..." \
-  -d '{
-    "agentId": "agt_01j8...",
-    "to": "user@example.com",
-    "subject": "BTC Alert",
-    "body": "Position crossed $100k."
-  }'
-```
+See `/api/v1/services` for exact IDs and paths. Only available paid records with `registerOnOkx=true` should be listed on OKX.AI. Never list webhooks, worker routes, health checks, WebSocket upgrades, reads, or disabled Domain routes as paid services.
 
----
+## Email architecture
 
-### Other endpoints
+Mailbox creation is the Email start-here service. The verified Resend domain supplies addresses; messages are persisted under tenant and mailbox.
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/analytics` | Daily send/receive stats |
-| POST/GET/DELETE | `/api/api-keys` | Manage bearer tokens |
-| POST/GET/DELETE | `/api/templates` | Email templates |
-| POST | `/api/webhooks/inbound` | Resend inbound webhook (internal) |
+Inbound flow:
 
----
+1. verify Svix/Resend signature;
+2. insert idempotent webhook audit row;
+3. fetch the real received email from Resend;
+4. match every active recipient mailbox;
+5. persist a mailbox-scoped message;
+6. insert a safe `email.received` durable event;
+7. notify an online agent over WebSocket;
+8. retain for offline replay and explicit acknowledgement.
 
-## OKX.AI ASP integration
+The event carries IDs, sender, subject, and time. It omits body and attachment content; the agent retrieves the complete email through the authenticated query endpoint.
 
-AgentMail is registered as an **ASP (Agent Service Provider)** on the OKX.AI marketplace. Each action has its own dedicated endpoint — OKX.AI registers one price per endpoint URL.
+## Phone architecture
 
-### Service discovery
+Phone provisioning creates a real AgentPhone webhook-mode agent and number. The caller supplies a public HTTPS `agentWebhookUrl`. AgentOS returns a one-time callback verification secret and stores it encrypted.
 
-```bash
-# Returns full manifest with all endpoints and pricing
-curl https://YOUR_DOMAIN/api/asp
-```
+Live conversation:
 
-```json
-{
-  "name": "AgentMail",
-  "version": "1.0.0",
-  "description": "Real email infrastructure for AI agents — send, receive, and manage agent mailboxes on your domain",
-  "authentication": "Bearer <api_key> in Authorization header",
-  "paymentProtocol": "x402 v2 (USDT0 on X Layer / eip155:196)",
-  "services": [...]
-}
-```
+1. AgentPhone signs a provider webhook to AgentOS.
+2. AgentOS verifies HMAC/replay window and resolves the exact tenant.
+3. Recording/media URL fields are stripped.
+4. The event is forwarded to the external agent with an AgentOS timestamped HMAC.
+5. The agent dynamically returns text, hangup, or a supported NDJSON stream.
+6. AgentOS relays that response to AgentPhone.
 
-### Endpoints & pricing
+AgentOS does not substitute a preconfigured hosted assistant. The external AI agent controls the conversation turn by turn.
 
-Each endpoint accepts `POST` with a JSON body. Free endpoints return `200` directly. Paid endpoints require x402 payment — the OKX.AI agent pays automatically.
+Recording is intentionally out of scope: no recording endpoint, URL, price, setting, or control. Transcripts remain available.
 
-| Endpoint | Price | Description |
-|---|---|---|
-| `POST /api/asp/mailbox/list` | free | List all agent mailboxes |
-| `POST /api/asp/inbox/get` | free | Fetch inbox with filters |
-| `POST /api/asp/email/get` | free | Get single email + attachments |
-| `POST /api/asp/thread/get` | free | Full conversation thread |
-| `POST /api/asp/email/mark-read` | free | Mark as read |
-| `POST /api/asp/email/mark-unread` | free | Mark as unread |
-| `POST /api/asp/email/archive` | free | Archive email |
-| `POST /api/asp/email/delete` | free | Delete email permanently |
-| `POST /api/asp/email/attachments` | free | List/download attachments |
-| `POST /api/asp/mailbox/create` | **$0.25** | Create new agent mailbox |
-| `POST /api/asp/email/send` | **$0.02** | Send email |
-| `POST /api/asp/template/send` | **$0.02** | Send via template |
-| `POST /api/asp/email/reply` | **$0.01** | Reply to email |
-| `POST /api/asp/email/reply-all` | **$0.01** | Reply all |
-| `POST /api/asp/email/forward` | **$0.01** | Forward email |
-| `POST /api/asp/template/send-bulk` | **$0.05** | Bulk send to many recipients |
-| `POST /api/asp/mailbox/update` | **$0.005** | Update mailbox settings |
-| `POST /api/asp/mailbox/delete` | **$0.005** | Delete mailbox |
-| `POST /api/asp/email/cancel-scheduled` | **$0.005** | Cancel scheduled email |
-| `POST /api/asp/email/search` | **$0.005** | Full-text search emails |
-| `POST /api/asp/template/create` | free | Create reusable email template |
-| `POST /api/asp/template/list` | free | List all templates |
-| `POST /api/asp/template/delete` | free | Delete a template |
+All customer resources currently use one AgentPhone master billing account. Agents never receive that provider key. Isolation is enforced in AgentOS through wallet tenants, exact provider-ID ownership, and tenant-scoped queries. AgentPhone sub-accounts are not used as the primary tenant boundary because the provider currently limits a master account to 25 sub-accounts; they may later be used as an additional enterprise isolation tier.
 
-### Example: create a mailbox
+### Numbers, calls, and allowance
 
-```bash
-curl -X POST https://YOUR_DOMAIN/api/asp/mailbox/create \
-  -H "Authorization: Bearer am_your_key" \
-  -H "PAYMENT-SIGNATURE: <x402-proof>" \
-  -H "Content-Type: application/json" \
-  -d '{ "name": "trading-bot", "displayName": "Trading Bot" }'
+An internal 30-day entitlement is created at purchase. Outbound packages authorize 60 or 300 connected seconds. The worker starts enforcement when the provider reports the call connected, not at HTTP request time. Extensions add exactly 60 seconds.
+
+Inbound seconds are prepaid per number. Concurrent calls reserve available balance atomically; final provider duration charges once and releases unused reservation.
+
+### Renewal lifecycle
+
+Durable jobs schedule `phone.number.expiring` at 5, 3, and 1 days before expiry. Payloads include number ID/value, expiry, deadline, fixed price, endpoint, request body, and release warning.
+
+AgentPhone renews provider numbers from the shared provider account balance but exposes no explicit number-renew endpoint or authoritative next-renewal timestamp. AgentOS renewal extends the internal entitlement and later reconciles provider active state. If the internal entitlement expires, usage is blocked and the worker attempts provider deletion before future unwanted renewal. Provider billing and deletion cannot be transactional at the exact boundary; this limitation is monitored and documented.
+
+## Unified event inbox
+
+Email, Phone, billing, credentials, future Domain, and system transitions share `v1_events`.
+
+```text
+webhook or durable job
+  -> normalize
+  -> persist
+  -> claim with delivery lease
+  -> WebSocket event.delivery
+  -> event.ack or REST ack
+  -> retained audit row
 ```
 
-```json
-{
-  "mailbox": {
-    "id": "agt_01j8...",
-    "emailAddress": "trading-bot@yourdomain.com",
-    "name": "trading-bot"
-  }
-}
-```
+States: `pending`, `delivered`, `acknowledged`, `expired`, `failed`. Creation, availability, delivery, acknowledgement, expiry, attempts, and delivery lease are separate. A socket write never acknowledges an event.
 
-### Example: send an email
+Free authenticated endpoints:
 
-```bash
-curl -X POST https://YOUR_DOMAIN/api/asp/email/send \
-  -H "Authorization: Bearer am_your_key" \
-  -H "PAYMENT-SIGNATURE: <x402-proof>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agentId": "agt_01j8...",
-    "to": "user@example.com",
-    "subject": "Hello from AgentMail",
-    "body": "This email was sent by an AI agent."
-  }'
-```
+- `POST /api/v1/events/list`
+- `POST /api/v1/events/get`
+- `POST /api/v1/events/ack`
+- `POST /api/v1/events/ack-all`
+- `GET /api/v1/events/realtime-token`
 
-### x402 v2 pay-per-call
+The gateway sends `session.ready`, deterministic replay, `event.delivery`, and `session.replay.complete`. Clients send `event.ack`. Database leases prevent concurrent duplicate claims; unacknowledged events become replayable after a lost socket/lease.
 
-When `PAYMENT_REQUIRED=true`, each paid endpoint returns HTTP 402 if no payment proof is included:
+## Realtime credential lifecycle
 
-```http
-HTTP/1.1 402 Payment Required
-PAYMENT-REQUIRED: <base64-encoded-challenge>
-Content-Type: application/json
-```
+The main `at_v1` token has no automatic expiry. The realtime JWT expires in 15 minutes, contains only the tenant subject/audience, and is accepted by the separate gateway. It must be refreshed with the main API token. Tokens are sent in `session.authenticate`, never in a URL.
 
-The OKX.AI runtime intercepts the 402, makes the on-chain USDT0 payment on X Layer (`eip155:196`), and retries the request with a `PAYMENT-SIGNATURE` header (the x402 v2 proof; `X-PAYMENT` is the legacy v1 header). On success the endpoint returns `200` with a `PAYMENT-RESPONSE` header carrying the settlement result. This is fully transparent to the agent — no manual payment handling needed.
+Vercel Functions cannot host persistent WebSocket servers, so `services/realtime-gateway` must run on long-lived compute.
 
-**Network:** X Layer Mainnet (`eip155:196`)  
-**Token:** USDT0 (`0x779ded0c9e1022225f8e0630b35a9b54be713736`)
+## Scheduler and worker architecture
 
----
+Vercel Cron invokes production Functions on a schedule; it is not a queue or daemon. `vercel.json` runs one daily 03:00 UTC safety sweep. That works on Hobby, whose current limit is once daily with imprecise execution within the selected hour.
 
-## Email flow
+Call deadlines, retry-heavy provider operations, expiry release, and quick reconciliation use `services/durable-worker`, which triggers short idempotent batches every five seconds. Durable rows, leases, retries, and dead state live in Postgres.
 
-### Outbound (agent → the world)
+Pro is needed only if Vercel itself must schedule more than daily. Even on Pro, the separate worker remains the correct place for sub-minute call enforcement and long-lived retry processing.
 
-```
-Agent → POST /api/emails/send
-    → email-service.sendAgentEmail()
-    → resend.sendEmail()            ← real SMTP via Resend
-    → Stored in Supabase            ← direction: "outbound", status: "sent"
-```
+## Database
 
-### Inbound (the world → agent)
+Local migrations:
 
-```
-Email arrives at trading-bot@yourdomain.com
-    → Resend receives it (MX record required)
-    → POST /api/webhooks/inbound    ← event: email.received (metadata only)
-        → verifyWebhook()           ← Svix signature check
-        → resend.getReceivedEmail() ← fetch full body (text/html) from Resend API
-    → email-service.receiveEmail()
-        ├─ Looks up Agent by emailAddress (UNIQUE index)
-        ├─ Thread detection: matches existing threadId (same from/to pair)
-        ├─ Stores email in Supabase   ← direction: "inbound"
-        └─ If webhookUrl set: fires POST to agent's webhook (HMAC-signed)
-```
+1. `20260723_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
+2. `20260724064040_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
+3. `20260724150000_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
+4. `20260724160000_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
+5. `20260724170000_gateway_only_event_access.sql` — removes direct browser access after moving delivery to the authenticated AgentOS gateway.
 
----
+The connected `agentmail` Supabase project was upgraded from its legacy-only schema during this implementation. RLS is now enabled on all 21 public tables and `anon/authenticated` have no direct public-table grants. Security advisors report no ERROR/WARN findings; the remaining INFO notices are expected deny-all tables with RLS and no client policies. Performance advisors report only unused-index notices because the v1 tables have no workload yet.
 
-## Email isolation
+Server application access uses the Supabase service role and still applies tenant predicates. Never expose the service role in browser code.
 
-Each `Agent` row has `emailAddress TEXT UNIQUE`. `receiveEmail` resolves the agent by exact address match — there is no wildcard or shared routing. `getInbox` always filters `.eq("agentId", id)`. One agent cannot access or receive another agent's email at any layer of the stack.
+## Environment
 
----
+Copy `.env.example` and configure:
 
-## Setup
+- application: `APP_URL`, owner dashboard Basic credentials;
+- Supabase: URL and service role;
+- OKX x402: API key, secret, passphrase, payment wallet;
+- Resend: API key, webhook secret, verified domain;
+- AgentPhone: API key/base URL and 32-byte phone encryption key;
+- scheduling: `CRON_SECRET`;
+- realtime: WSS gateway URL and JWT secret;
+- external worker: app URL and interval;
+- Namecheap values only after Domain activation.
 
-### 1. Clone and install
+Never commit real provider or payment credentials. Rotate any secret posted in chat or issue history.
+
+## Local development
 
 ```bash
-git clone https://github.com/hosein-ul/jain
-cd jain
 npm install
+npm run dev
+npm run realtime-gateway
+npm run durable-worker
 ```
 
-### 2. Configure environment
+Validation:
 
 ```bash
-cp .env.example .env
+npm run lint
+npm run typecheck
+npm test
+npm run build
 ```
 
-| Variable | Required | Description |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase anon key |
-| `RESEND_API_KEY` | For real email | Resend API key |
-| `RESEND_WEBHOOK_SECRET` | For inbound email | Signing secret from Resend › Webhooks |
-| `EMAIL_DOMAIN` | Yes | Your verified domain (e.g. `yourdomain.com`) |
-| `PAYMENT_REQUIRED` | OKX.AI | `"true"` to enforce x402 payments |
-| `PAYMENT_WALLET` | OKX.AI | EVM wallet on X Layer to receive USDT0 |
+Apply migrations to a reviewed Supabase branch/staging project before starting provider E2E tests.
 
-### 3. Run locally
+## Deployment
 
-```bash
-npm run dev   # http://localhost:3000
-```
+### Next.js / Vercel
 
-Without `RESEND_API_KEY`, emails are logged to console (dev mode). The database, API, dashboard, and ASP endpoints work fully.
+1. Create or link the actual AgentOS Vercel project.
+2. configure production environment variables;
+3. deploy to production (cron is production-only);
+4. verify discovery and protected dashboard behavior;
+5. configure webhook URLs;
+6. verify the daily cron invocation and one-batch duration.
 
-### 4. Configure Resend for real email
+### Realtime gateway
 
-1. Add your domain in Resend → Domains and verify DNS
-2. Add DNS records provided by Resend:
-   - MX record pointing to Resend's inbound servers
-   - DKIM, SPF, DMARC records
-3. Add a webhook in Resend → Webhooks:
-   - URL: `https://yourdomain.com/api/webhooks/inbound`
-   - Events: `email.received`
-   - Copy the signing secret → set `RESEND_WEBHOOK_SECRET`
+Deploy `npm run realtime-gateway` to long-lived Node compute with WSS termination, health checks, restart policy, and the Supabase/realtime secrets.
 
-### 5. Deploy to Vercel
+### Durable worker
 
-```bash
-npm i -g vercel
-vercel --prod
-```
+Deploy `npm run durable-worker` as a single or horizontally safe long-lived process. Postgres leases permit multiple workers, but start conservatively and monitor provider rate limits.
 
-Set all env variables in the Vercel dashboard.
+### Providers
 
-### 6. Register on OKX.AI
-
-Registration happens **in conversation with the OKX.AI agent** (not a web form or CLI flag). You register once as an **ASP** (role `asp`) with a name, description, and avatar, then add one **A2MCP service per endpoint**. For each service you provide:
-
-- **Service name** — a 5–30 char noun phrase (e.g. "Create Agent Mailbox"), not the ASP name, no price in the name
-- **Description** — two parts: ① what it does + who it's for, ② what the caller must supply (e.g. "1. agent name")
-- **Type** — `A2MCP` (API service)
-- **Fee** — a bare number in **USDT**, digits only, no `$`/symbol/unit (e.g. `0.25`). Free services omit the fee.
-- **Endpoint** — a public `https://` URL (permanent on-chain; localhost/http rejected)
-
-Replace `YOUR_DOMAIN` with your actual deployed URL (e.g. your Vercel URL). Endpoint URLs are permanent on-chain once registered.
-
-The paid services to register (fee is USDT; the on-chain asset is USDT0 on X Layer):
-
-| Service | Endpoint | Fee (USDT) |
-|---|---|---|
-| Create Agent Mailbox | `https://YOUR_DOMAIN/api/asp/mailbox/create` | `0.25` |
-| Send Email | `https://YOUR_DOMAIN/api/asp/email/send` | `0.02` |
-| Send Templated Email | `https://YOUR_DOMAIN/api/asp/template/send` | `0.02` |
-| Reply to Email | `https://YOUR_DOMAIN/api/asp/email/reply` | `0.01` |
-| Reply All | `https://YOUR_DOMAIN/api/asp/email/reply-all` | `0.01` |
-| Forward Email | `https://YOUR_DOMAIN/api/asp/email/forward` | `0.01` |
-| Bulk Template Send | `https://YOUR_DOMAIN/api/asp/template/send-bulk` | `0.05` |
-| Update Mailbox | `https://YOUR_DOMAIN/api/asp/mailbox/update` | `0.005` |
-| Delete Mailbox | `https://YOUR_DOMAIN/api/asp/mailbox/delete` | `0.005` |
-| Cancel Scheduled Email | `https://YOUR_DOMAIN/api/asp/email/cancel-scheduled` | `0.005` |
-| Search Emails | `https://YOUR_DOMAIN/api/asp/email/search` | `0.005` |
-
-Free services (template/create, template/list, template/delete, inbox/get, email/get, thread/get, mark-read, archive, delete, list-attachments, mailbox/list) can be registered the same way with no fee. Each submission is reviewed within 24 hours; the result arrives at your Agentic Wallet email and in the agent conversation.
-
-Then set `PAYMENT_REQUIRED=true`, `PAYMENT_WALLET=0x...`, and `OKX_API_KEY` / `OKX_SECRET_KEY` / `OKX_PASSPHRASE` in your Vercel env vars.
-
----
+- Resend webhook: `https://APP_URL/api/v1/webhooks/resend`.
+- AgentPhone webhook is configured per agent during purchase.
+- Namecheap must have stable allowlisted IPv4 before enabling Domain.
 
 ## Dashboard
 
-The built-in dashboard at `/dashboard` provides full management UI:
+`/dashboard/**` remains accessible to the owner through HTTP Basic Auth. It is private admin tooling, separate from agent tokens, and must never be exposed as an A2MCP service. Legacy supporting routes receive the same edge protection.
 
-| Page | Path | What it does |
-|---|---|---|
-| Overview | `/dashboard` | Activity chart, agent list, stats |
-| Agents | `/dashboard/agents` | Create/manage agent mailboxes |
-| Agent inbox | `/dashboard/agents/:id` | Split-pane email client — read, compose, reply |
-| Analytics | `/dashboard/analytics` | Daily send/receive breakdown per agent |
-| API Keys | `/dashboard/api-keys` | Generate and revoke bearer tokens |
-| Templates | `/dashboard/templates` | Reusable email templates with `{{variables}}` |
-| Settings | `/dashboard/settings` | Resend config, OKX.AI ASP endpoints |
+## Idempotency and payment reconciliation
 
----
+Paid operations require `Idempotency-Key`. Each record binds tenant, endpoint, request hash, payment proof, response, and settlement header. Replays return the stored response. Changed-body reuse is rejected. The payment ledger prevents proof reuse across operations.
 
-## What needs a real domain to work end-to-end
+`payment.completed` and `payment.failed` are internal normalized durable events. A settled payment that cannot be durably recorded is treated as an operational incident; clients must not pay again.
 
-| Feature | Without domain | With domain |
-|---|---|---|
-| API and database | Works | Works |
-| Dashboard | Works | Works |
-| A2MCP endpoint | Works | Works |
-| Outbound email | Works (needs Resend key) | Works |
-| Inbound email | No (needs MX records) | Works |
-| x402 payments | Works (toggle env var) | Works |
+## Security
 
----
+- wallet-bound tenant and payer checks;
+- hashed API tokens;
+- encrypted provider/callback secrets;
+- verified provider webhooks and replay windows;
+- SSRF-safe agent callback URLs;
+- RLS and explicit grants;
+- no trusted tenant IDs;
+- database uniqueness for provider/idempotency keys;
+- no recordings;
+- owner dashboard separated from agent auth;
+- internal routes protected by `CRON_SECRET`.
 
-## Phone
+## Observability and failure recovery
 
-Real phone numbers for agents. Each tenant owns their own numbers; inbound calls and transcripts are mapped to the correct tenant via the destination E.164 number.
+Alert on:
 
-### Endpoints
+- missing worker heartbeats;
+- dead or repeatedly leased jobs;
+- event delivery/ack latency;
+- release/cleanup-required phone states;
+- provider reconciliation failures;
+- webhook signature errors and backlog;
+- payment ledger failures;
+- Vercel cron gaps;
+- gateway disconnect rate and replay volume.
 
-| Endpoint | Price | Description |
-|---|---|---|
-| `POST /api/asp/phone/numbers` | free | List your numbers |
-| `POST /api/asp/phone/calls/get` | free | Get a call by id |
-| `POST /api/asp/phone/calls/transcript` | free | Get STT transcript of a completed call |
-| `POST /api/asp/phone/buy-number` | **$1.00** | Buy a real number (exact e164, or `{country, areaCode?}`) |
-| `POST /api/asp/phone/release-number` | **$0.005** | Release a number |
-| `POST /api/asp/phone/start-call` | **$0.05** | Outbound call |
-| `POST /api/asp/phone/answer-call` | **$0.005** | Answer an inbound ringing call |
-| `POST /api/asp/phone/end-call` | **$0.005** | Hang up |
+After an ambiguous paid response, retry the identical request/proof/key and inspect free read endpoints. Never create a new payment solely because a network response was lost.
 
-### Provider
+## CI
 
-`PhoneProvider` interface (`src/lib/providers/phone.ts`) with two adapters shipped:
+The minimum pipeline is install, lint, typecheck, tests, and production build. Add migration linting, generated catalog/OpenAPI consistency tests, secret scanning, dependency audit triage, and paid-provider staging smoke tests before marketplace launch.
 
-- `MockPhoneProvider` — default, deterministic, no external calls (dev + tests)
-- `TwilioPhoneProvider` — thin Twilio REST adapter (activated by `PHONE_PROVIDER=twilio` + `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`)
+## Migration from Telnyx
 
-Inbound events land at `POST /api/webhooks/phone`. The handler verifies the provider signature, deduplicates via `WebhookEvent.externalId`, then routes to `ingestCallEvent` which either updates an existing call or provisions a new `Call` row scoped to the tenant that owns the destination number.
+Public v1 Phone uses AgentPhone, not Telnyx or Twilio. Legacy `/api/asp/**` may still contain old provider experiments but is retired for public use. Do not copy legacy phone contracts into OKX listings. Remove legacy code only after the dashboard no longer depends on it and data migration is complete.
 
----
+## Known limitations
 
-## Domain
+- AgentOS is not linked to a connected Vercel project, so current plan/deployment cannot be verified.
+- Connected Supabase matches the five local v1 migrations, but contains no real v1 E2E data yet.
+- Realtime gateway and continuous worker are implemented but not deployed.
+- Domain is deliberately unavailable.
+- AgentPhone provider renewal timing lacks an explicit renew endpoint/date and has an unavoidable boundary race.
+- AgentPhone provider resources share the operator billing account; internal AgentOS ownership is the current tenant boundary.
+- Real paid/provider E2E tests require configured funded accounts and production-like callbacks.
+- Dependency audit currently needs explicit review; do not run breaking automatic upgrades without assessing compatibility.
 
-Domain registration and DNS management for agents. Every domain and DNS record row is tenant-scoped by `userId`.
+## Production checklist
 
-### Endpoints
+- [ ] Link/deploy the actual Vercel project and verify its plan.
+- [ ] Review/apply all Supabase migrations and rerun advisors.
+- [ ] Configure and rotate all secrets.
+- [ ] Deploy WSS gateway and durable worker with alerts.
+- [ ] Verify Resend and AgentPhone signatures and callbacks.
+- [ ] Run two-wallet cross-tenant tests.
+- [ ] Run x402 challenge, settlement, replay, and lost-response tests.
+- [ ] Test inbound concurrency and call deadline enforcement.
+- [ ] Test 5/3/1-day reminders, renewal, suspension, and release.
+- [ ] Verify catalog, OpenAPI, docs, and OKX registrations match.
+- [ ] Keep Domain unlisted until all prerequisites pass.
 
-| Endpoint | Price | Description |
-|---|---|---|
-| `POST /api/asp/domain/search` | free | Check availability across TLDs |
-| `POST /api/asp/domain/list` | free | List your registered domains |
-| `POST /api/asp/domain/dns/list` | free | List live DNS records for a domain you own |
-| `POST /api/asp/domain/register` | **$10.00** | Register a domain (ICANN contact required) |
-| `POST /api/asp/domain/renew` | **$10.00** | Extend registration |
-| `POST /api/asp/domain/dns/update` | **$0.01** | Create/update a DNS record |
-| `POST /api/asp/domain/dns/delete` | **$0.005** | Delete a DNS record |
-
-### Provider
-
-`DomainProvider` interface (`src/lib/providers/domain.ts`). MVP ships with `MockDomainProvider`; production would plug in Namecheap / Porkbun / Cloudflare Registrar behind the same interface. The service layer always calls the provider first (source of truth), then reconciles the local mirror row for indexing and tenant scoping.
-
-Registrar events land at `POST /api/webhooks/domain` and update the local domain state.
-
----
-
-## Architecture principles
-
-- **API-first, not MCP.** REST endpoints are the public product surface. Every capability is one endpoint with one fixed price, as the OKX.AI ASP marketplace registers per URL.
-- **Fixed price per service.** If two capabilities need different prices, they are split into separate URLs. Never a single endpoint with variable pricing.
-- **Provider-agnostic core.** Business logic lives in `src/lib/{email,phone,domain}-service.ts`. Provider-specific code lives in `src/lib/providers/*.ts` behind a normalized interface. Swapping providers touches only the adapter.
-- **Tenant isolation at every layer.** All service queries filter by `userId`. Resources are resolved by `(id, userId)` before any write. Inbound webhooks map back to the owning tenant via the resource identifier (destination phone number, registered domain name).
-- **Credentials never leak.** Provider API keys stay server-side. Callers get a session token (`at_...`) after their first paid call and use it as `Authorization: Bearer` on subsequent calls (both free and paid).
-- **Free ≠ public.** Tenant-scoped read endpoints (inbox, call transcripts, DNS list) still require auth and still scope reads to the caller's tenant.
-- **x402 pay-per-call.** Paid endpoints return 402 when payment is missing/invalid and are retryable with a valid `PAYMENT-SIGNATURE`. When `PAYMENT_REQUIRED != true` the middleware short-circuits to dev mode; auth still applies.
-
-### Layered request path
-
-```
-Client / OKX.AI Agent
-   │
-   ▼
-POST /api/asp/<service>/<action>
-   │
-   ▼   createPaidRoute / createFreeRoute  (src/lib/asp-route.ts)
-   │
-   ├── x402 requirePayment (paid only)         → 402 or verified payer
-   ├── auth: resolvePaidUser | getRequestUser  → tenant identity
-   │
-   ▼
-Service layer  (email-service | phone-service | domain-service)
-   │  ── every read/write filters by userId
-   │
-   ▼
-Provider adapter  (Resend | MockPhone / Twilio | MockDomain)
-   │
-   ▼
-Database (Supabase)  |  External provider API
-```
-
-### Database (per-tenant)
-
-Every non-lookup table carries `userId`. New tables added for this milestone:
-
-- `PhoneNumber (id, userId, e164 UNIQUE, provider, providerNumberId, capabilities, webhookUrl, isActive)`
-- `Call (id, userId, phoneNumberId, direction, fromNumber, toNumber, status, providerCallId, startedAt, answeredAt, endedAt, durationSec, recordingUrl)`
-- `CallTranscript (id, callId UNIQUE, userId, text, language, segments)`
-- `Domain (id, userId, name UNIQUE, provider, providerDomainId, status, registeredAt, expiresAt, autoRenew, nameservers)`
-- `DnsRecord (id, userId, domainId, type, name, value, ttl, priority, providerRecordId)`
-- `WebhookEvent (id, provider, kind, externalId UNIQUE, payload, receivedAt, processedAt)` — inbound event idempotency
-- `AccessToken (token, userId, createdAt, lastUsedAt)` — session tokens issued after first paid call
-
-Migration SQL lives in `prisma/migrations/20260721000000_phone_domain/migration.sql`. Prisma schema is documentation-only; the app talks to Supabase directly.
-
-### Environment variables
-
-Existing (see Setup section above): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `EMAIL_DOMAIN`, `PAYMENT_REQUIRED`, `PAYMENT_WALLET`, `OKX_API_KEY`, `OKX_SECRET_KEY`, `OKX_PASSPHRASE`.
-
-New:
-
-| Variable | Purpose |
-|---|---|
-| `PHONE_PROVIDER` | `mock` (default) or `twilio` |
-| `TWILIO_ACCOUNT_SID` | Twilio credentials (only when `PHONE_PROVIDER=twilio`) |
-| `TWILIO_AUTH_TOKEN` | Twilio credentials |
-| `DOMAIN_PROVIDER` | reserved — MVP ships mock only |
-
----
-
-## License
-
-MIT
+For exact requests, responses, event protocol, JavaScript/Python examples, deployment commands, and recovery actions, read [docs.md](./docs.md).

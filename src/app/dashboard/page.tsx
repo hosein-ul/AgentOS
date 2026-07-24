@@ -33,12 +33,23 @@ interface Stats {
     totalEmails: number
     isActive: boolean
   }>
+  phone: {
+    totalNumbers: number
+    activeNumbers: number
+    callsLast7Days: number
+    minutesLast7Days: number
+  }
+  domains: { total: number; active: number }
+  payments: {
+    totalLast7Days: number
+    byService: Array<{ label: string; count: number; total: number }>
+  }
+  recentEvents: Array<{
+    type: string
+    payload: Record<string, unknown>
+    created_at: string
+  }>
 }
-
-// Placeholder data for services that don't have an /api/analytics endpoint yet.
-const PHONE_STUB = { total: 3, unreadCalls: 2, minutes: 47.2, delta: 12.4 }
-const DOMAIN_STUB = { total: 2, expiringSoon: 1, dnsRecords: 18, delta: 0 }
-const SPEND_STUB = { total: 4.28, delta: 8.1, trend: [1.2, 1.8, 2.1, 1.9, 2.6, 3.4, 4.28] }
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null)
@@ -74,7 +85,7 @@ export default function DashboardPage() {
         actions={
           <>
             <Button variant="secondary" size="md" asChild>
-              <Link href="/api/asp" target="_blank">
+              <Link href="/api/v1" target="_blank">
                 <Activity /> API status
               </Link>
             </Button>
@@ -119,19 +130,16 @@ export default function DashboardPage() {
             />
             <Stat
               label="Calls this week"
-              value={PHONE_STUB.minutes}
+              value={stats?.phone.minutesLast7Days ?? 0}
               format={(n) => n.toFixed(1)}
               suffix="min"
-              delta={PHONE_STUB.delta}
-              trend={[4, 6, 5, 9, 8, 11, 12]}
               icon={<PhoneCall />}
             />
             <Stat
-              label="x402 spend (USDT0)"
-              value={SPEND_STUB.total}
+              label="x402 settled · 7 days"
+              value={stats?.payments.totalLast7Days ?? 0}
               format={(n) => n.toFixed(4)}
-              delta={SPEND_STUB.delta}
-              trend={SPEND_STUB.trend}
+              suffix="USDT"
               icon={<Zap />}
             />
           </>
@@ -233,17 +241,17 @@ export default function DashboardPage() {
           <ServiceCard
             icon={<PhoneCall />}
             title="Phone"
-            total={PHONE_STUB.total}
+            total={stats?.phone.totalNumbers ?? 0}
             unit="numbers"
-            statLine={`${PHONE_STUB.unreadCalls} unread calls`}
+            statLine={`${stats?.phone.callsLast7Days ?? 0} calls in 7 days`}
             href="/dashboard/numbers"
           />
           <ServiceCard
             icon={<Globe />}
             title="Domains"
-            total={DOMAIN_STUB.total}
+            total={stats?.domains.total ?? 0}
             unit="domains"
-            statLine={`${DOMAIN_STUB.expiringSoon} expiring soon`}
+            statLine={`${stats?.domains.active ?? 0} active`}
             href="/dashboard/domains"
           />
         </div>
@@ -319,12 +327,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <ul className="flex flex-col gap-2.5">
-              {[
-                { label: "email/send", count: 128, total: 2.56 },
-                { label: "phone/start-call", count: 22, total: 1.10 },
-                { label: "domain/dns/update", count: 14, total: 0.14 },
-                { label: "mailbox/create", count: 3, total: 0.75 },
-              ].map((row) => (
+              {(stats?.payments.byService ?? []).slice(0, 8).map((row) => (
                 <li key={row.label} className="flex items-center gap-3">
                   <Badge variant="outline">{row.label}</Badge>
                   <span className="text-[12px] text-muted">×{row.count}</span>
@@ -344,26 +347,20 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <ul className="flex flex-col gap-3">
-              {[
-                { kind: "email.received", subject: "Order confirmation", who: "trading-bot@…", time: new Date(Date.now() - 4 * 60_000) },
-                { kind: "call.completed", subject: "5m 12s • +1 (415) 555-8891", who: "sales-agent", time: new Date(Date.now() - 22 * 60_000) },
-                { kind: "email.sent", subject: "Re: Weekly digest", who: "digest-bot@…", time: new Date(Date.now() - 61 * 60_000) },
-                { kind: "dns.updated", subject: "A record → 76.76.21.21", who: "acmecorp.com", time: new Date(Date.now() - 3 * 3600_000) },
-                { kind: "mailbox.created", subject: "research-agent", who: "wallet 0x71c…4d", time: new Date(Date.now() - 5 * 3600_000) },
-              ].map((row, i) => (
+              {(stats?.recentEvents ?? []).map((row, i) => (
                 <li key={i} className="flex items-start gap-3 pb-3 last:pb-0 border-b border-line last:border-0">
                   <span className="mt-1 size-1.5 rounded-full bg-accent shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] text-text truncate">{row.subject}</div>
+                    <div className="text-[12.5px] text-text truncate">
+                      {String(row.payload.phoneNumber ?? row.payload.phoneNumberId ?? row.payload.callId ?? row.type)}
+                    </div>
                     <div className="text-[11.5px] text-muted flex items-center gap-1.5 mt-0.5">
-                      <span className="font-mono">{row.kind}</span>
-                      <span>·</span>
-                      <span className="truncate">{row.who}</span>
+                      <span className="font-mono">{row.type}</span>
                     </div>
                   </div>
                   <span className="text-[11px] text-muted flex items-center gap-1 shrink-0">
                     <Timer className="size-3" />
-                    {fmtRelative(row.time)}
+                    {fmtRelative(row.created_at)}
                   </span>
                 </li>
               ))}

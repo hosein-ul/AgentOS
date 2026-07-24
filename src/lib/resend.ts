@@ -38,11 +38,6 @@ export interface SendEmailParams {
 export async function sendEmail(params: SendEmailParams): Promise<{ success: true; messageId: string | undefined }> {
   const { from, to, subject, body, html, cc, bcc, replyTo, inReplyTo, attachments, scheduledAt } = params
 
-  if (!process.env.RESEND_API_KEY) {
-    console.log("[DEV] Email not sent (no RESEND_API_KEY):", { from, to, subject })
-    return { success: true, messageId: undefined }
-  }
-
   const toArr  = Array.isArray(to)  ? to  : [to]
   const ccArr  = cc  ? (Array.isArray(cc)  ? cc  : [cc])  : undefined
   const bccArr = bcc ? (Array.isArray(bcc) ? bcc : [bcc]) : undefined

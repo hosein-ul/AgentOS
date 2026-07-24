@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/v1/internal/phone-worker",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}

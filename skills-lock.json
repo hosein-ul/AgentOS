@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "skills": {
+    "telnyx-account-reports-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-account-reports-javascript/SKILL.md",
+      "computedHash": "6e92cc5d813c66fe34eca85170c5e92158cbf2adb6137e795f292ceb46851b88"
+    },
+    "telnyx-numbers-compliance-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-numbers-compliance-javascript/SKILL.md",
+      "computedHash": "ea56cd9255c548e279f87a2370cadc115e469994f04011cee3a8e2d4f81026b4"
+    },
+    "telnyx-numbers-config-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-numbers-config-javascript/SKILL.md",
+      "computedHash": "81b743ac855c986688acdd8b22889357a6034dabf188ee812f92376b4864feaf"
+    },
+    "telnyx-numbers-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-numbers-javascript/SKILL.md",
+      "computedHash": "9e0fdd698a87ed9a126d90da2ac35f640cf5854e9a292eafe7f0b69b49c3c508"
+    },
+    "telnyx-sip-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-sip-javascript/SKILL.md",
+      "computedHash": "78ab01af28c2e472a03ebed3998c75d5c819271a4078cd4c989f9547e2159727"
+    },
+    "telnyx-voice-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-voice-javascript/SKILL.md",
+      "computedHash": "baafe57f683c12f8cd32aa226d45b5e59186bb842baeb0cd23c2232585cae07e"
+    },
+    "telnyx-voice-streaming-javascript": {
+      "source": "team-telnyx/ai",
+      "sourceType": "github",
+      "skillPath": "skills/telnyx-voice-streaming-javascript/SKILL.md",
+      "computedHash": "b6f25a324ce1698c8355f00c741ad6ddc385b793ba3e2bdc537d0cf755a9b1f7"
+    }
+  }
+}

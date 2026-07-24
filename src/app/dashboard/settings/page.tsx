@@ -1,12 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
 
 export default function SettingsPage() {
-  // Start with the canonical origin on both server and first client render to
-  // avoid a hydration mismatch, then swap to the real origin after mount.
-  const [origin, setOrigin] = useState("")
-  useEffect(() => setOrigin(window.location.origin), [])
+  const origin = ""
 
   const aspServices: { path: string; price: string }[] = [
     { path: "/api/asp/mailbox/list", price: "free" },
