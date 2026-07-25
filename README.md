@@ -109,8 +109,8 @@ Public prices never change automatically with provider pricing.
 | Update mailbox | 0.01 USDT |
 | Delete mailbox | 0.01 USDT |
 | Send email | 0.02 USDT |
-| US number / 30 days | 5.00 USDT |
-| Canada number / 30 days | 5.00 USDT |
+| US number / 30 days | 7.00 USDT |
+| Canada number / 30 days | 7.00 USDT |
 | Renew number / 30 days | 5.00 USDT |
 | Outbound call / up to 1 minute | 0.30 USDT |
 | Outbound call / up to 5 minutes | 1.50 USDT |
@@ -226,7 +226,7 @@ Server application access uses the Supabase service role and still applies tenan
 
 Copy `.env.example` and configure:
 
-- application: `APP_URL`, owner dashboard Basic credentials;
+- application: `APP_URL`, wallet-dashboard session secret, and private admin Basic credentials;
 - Supabase: URL and service role;
 - OKX x402: API key, secret, passphrase, payment wallet;
 - Resend: API key, webhook secret, verified domain;
@@ -285,7 +285,11 @@ Deploy `npm run durable-worker` as a single or horizontally safe long-lived proc
 
 ## Dashboard
 
-`/dashboard/**` remains accessible to the owner through HTTP Basic Auth. It is private admin tooling, separate from agent tokens, and must never be exposed as an A2MCP service. Legacy supporting routes receive the same edge protection.
+`/dashboard/**` is the public owner portal. The owner connects an injected wallet with RainbowKit and signs a gas-free one-time message. AgentOS verifies the signature, creates a 12-hour HttpOnly session, and scopes all dashboard reads and actions to the wallet’s tenant.
+
+The dashboard exposes real mailbox, message, AgentPhone, transcript, durable-event, payment-ledger, domain-inventory, and agent-token management. Paid buttons perform the same fixed-price OKX x402 flow as the public API and require the selected payment wallet to match the signed-in owner wallet. No provider result or balance is mocked.
+
+`/admin/**` is the operator-only cross-tenant view and remains protected by HTTP Basic Auth. Neither dashboard nor admin routes are OKX.AI marketplace services.
 
 ## Idempotency and payment reconciliation
 
@@ -304,7 +308,7 @@ Paid operations require `Idempotency-Key`. Each record binds tenant, endpoint, r
 - no trusted tenant IDs;
 - database uniqueness for provider/idempotency keys;
 - no recordings;
-- owner dashboard separated from agent auth;
+- wallet-owner dashboard, private operator admin, and agent bearer auth kept separate;
 - internal routes protected by `CRON_SECRET`.
 
 ## Observability and failure recovery

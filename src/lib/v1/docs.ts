@@ -149,7 +149,7 @@ Only email.received is normalized today because it is the Resend lifecycle curre
 
 ## Phone flow
 
-1. Buy a US or Canada number for 5.00 USDT / 30 days.
+1. Buy a US or Canada number for 7.00 USDT / 30 days.
 2. Save the AgentOS access token, phoneNumberId, E.164 number, and one-time callbackVerificationSecret.
 3. AgentPhone calls AgentOS. AgentOS verifies provider HMAC and maps provider IDs to the owning tenant.
 4. AgentOS forwards each live agent.message to agentWebhookUrl with X-AgentOS-Timestamp and X-AgentOS-Signature.
@@ -187,7 +187,7 @@ AgentOS currently uses one operator AgentPhone billing account. The provider API
 
 ## Number renewal
 
-The internal entitlement is exactly 30 days. Fixed purchase and renewal prices are each 5.00 USDT. Durable jobs generate phone.number.expiring events 5, 3, and 1 days before expiry. Each event includes phoneNumberId, phone number, expiry, renewal deadline, fixed price, renewal endpoint, request body, and release warning.
+The internal entitlement is exactly 30 days. US and Canada purchases are each 7.00 USDT; renewal is explicitly fixed at 5.00 USDT. Durable jobs generate phone.number.expiring events 5, 3, and 1 days before expiry. Each event includes phoneNumberId, phone number, expiry, renewal deadline, fixed price, renewal endpoint, request body, and release warning.
 
 Renew:
 
@@ -270,9 +270,9 @@ Vercel Pro is required only if Vercel itself must invoke cron more than daily. I
 
 Apply migrations in timestamp order and run Supabase security/performance advisors. v1 server access uses only SUPABASE_SERVICE_ROLE_KEY; browser roles receive no table grants except the legacy Realtime policy retained for migration compatibility. The connected legacy tables must have RLS enabled and anon/authenticated grants revoked.
 
-Required groups: APP_URL; OKX credentials and payment wallet; Supabase URL/service role; Resend API/webhook/domain; AgentPhone API/base URL; PHONE_SECRET_ENCRYPTION_KEY; CRON_SECRET; REALTIME_GATEWAY_URL and REALTIME_GATEWAY_JWT_SECRET; private dashboard Basic credentials. Domain variables remain unset until production activation.
+Required groups: APP_URL; OKX credentials and payment wallet; Supabase URL/service role; Resend API/webhook/domain; AgentPhone API/base URL; PHONE_SECRET_ENCRYPTION_KEY; CRON_SECRET; REALTIME_GATEWAY_URL and REALTIME_GATEWAY_JWT_SECRET; DASHBOARD_SESSION_SECRET; private admin Basic credentials. Domain variables remain unset until production activation.
 
-Dashboard paths are owner-only HTTP Basic Auth and are not an agent auth surface. Provider webhooks and internal worker routes are infrastructure, not marketplace services.
+Dashboard paths use a wallet-signature HttpOnly owner session and are not an agent auth surface. The separate /admin path uses operator Basic Auth. Provider webhooks and internal worker routes are infrastructure, not marketplace services.
 `
 
 export const llmsText = String.raw`# AgentOS
@@ -313,7 +313,7 @@ Send body: {"mailboxId":"uuid","to":["recipient@example.com"],"subject":"Subject
 
 ## Phone Flow
 
-Buy number → save token/phoneNumberId/callback secret → accept signed live voice callbacks → return dynamic text/hangup → buy outbound call packages or inbound allowance → monitor phone.number.expiring → renew for 5.00 USDT / 30 days → release safely when no longer needed.
+Buy number for 7.00 USDT / 30 days → save token/phoneNumberId/callback secret → accept signed live voice callbacks → return dynamic text/hangup → buy outbound call packages or inbound allowance → monitor phone.number.expiring → renew for 5.00 USDT / 30 days → release safely when no longer needed.
 
 Buy body: {"agentName":"support-agent","agentWebhookUrl":"https://agent.example.com/voice","areaCode":"415"}
 Call body: {"phoneNumberId":"uuid","toNumber":"+14155550123"}

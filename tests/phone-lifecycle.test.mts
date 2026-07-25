@@ -33,8 +33,8 @@ test("reminders are scheduled 5, 3, and 1 day before expiry", () => {
 })
 
 test("public phone prices are fixed at the approved catalog values", () => {
-  assert.equal(PHONE_SERVICES.purchaseUsNumber30Days.amount, "5.00")
-  assert.equal(PHONE_SERVICES.purchaseCanadaNumber30Days.amount, "5.00")
+  assert.equal(PHONE_SERVICES.purchaseUsNumber30Days.amount, "7.00")
+  assert.equal(PHONE_SERVICES.purchaseCanadaNumber30Days.amount, "7.00")
   assert.equal(PHONE_SERVICES.renewNumber30Days.amount, "5.00")
   assert.equal(PHONE_SERVICES.outboundCall1Minute.amount, "0.30")
   assert.equal(PHONE_SERVICES.outboundCall5Minutes.amount, "1.50")

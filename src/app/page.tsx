@@ -2,7 +2,7 @@ import Link from "next/link"
 
 const services = [
   { label: "MAIL", title: "A real inbox", provider: "Resend", price: "0.25", detail: "Provision, send, receive, retrieve." },
-  { label: "VOICE", title: "A live number", provider: "AgentPhone", price: "5.00 / 30d", detail: "Inbound and outbound conversations controlled by the agent." },
+  { label: "VOICE", title: "A live number", provider: "AgentPhone", price: "7.00 / 30d", detail: "Inbound and outbound conversations controlled by the agent." },
   { label: "EVENTS", title: "A durable signal", provider: "Supabase + WSS", price: "FREE", detail: "Immediate delivery, offline replay, explicit acknowledgement." },
 ]
 
@@ -96,7 +96,7 @@ export default function LandingPage() {
           <p className="text-[#77796c]">$ curl /api/v1/services/phone.number.us.30d</p>
           <p className="mt-3">serviceId: <span className="text-white">phone.number.us.30d</span></p>
           <p>endpoint: <span className="text-white">POST /api/v1/phone/purchase-us-number-30-days</span></p>
-          <p>fixedPrice: <span className="text-[#e7ff4f]">5.00 USDT</span></p>
+          <p>fixedPrice: <span className="text-[#e7ff4f]">7.00 USDT</span></p>
           <p>startHere: <span className="text-white">true</span></p>
           <p>providerSuccess: <span className="text-white">real_only</span></p>
         </div>
