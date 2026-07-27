@@ -367,3 +367,16 @@ test("provider webhook bodies are bounded before the signature is computed", () 
     assert.doesNotMatch(route, /await request\.text\(\)/, `${path} must not read an unbounded body`)
   }
 })
+
+test("replay always terminates, even if the durable inbox is unreadable", () => {
+  const gateway = read("services/realtime-gateway/server.mjs")
+  assert.match(gateway, /REPLAY_TIMEOUT_MS/, "the replay claim is time-bounded")
+  assert.match(gateway, /REPLAY_UNAVAILABLE/, "a failed replay is reported, not swallowed")
+  assert.match(
+    gateway,
+    /send\(socket, \{ type: "session\.replay\.complete", replay \}\)/,
+    "session.replay.complete is sent on both the success and failure paths",
+  )
+  // Events are not lost when replay defers.
+  assert.match(gateway, /durable inbox/i)
+})

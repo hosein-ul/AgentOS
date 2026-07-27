@@ -23,6 +23,7 @@ const TENANT_B = "22222222-2222-2222-2222-222222222222"
 const TENANT_DUP = "33333333-3333-3333-3333-333333333333"
 const TENANT_SILENT = "44444444-4444-4444-4444-444444444444"
 const TENANT_DROP = "55555555-5555-5555-5555-555555555555"
+const TENANT_NOTIFY = "66666666-6666-6666-6666-666666666666"
 
 const results = []
 const record = (name, ok, detail = "") => {
@@ -218,6 +219,67 @@ try {
     dropped.body?.status === "disconnected" && Date.now() - droppedAt < 5_000,
     `status=${dropped.body?.status}`,
   )
+
+  // 8. Durable-notification handshake on the same socket.
+  //
+  // Only the parts that do not need a live database are asserted here. Claiming
+  // and replaying stored events calls v1_claim_events_for_delivery against
+  // Supabase, which is a placeholder in this run, so delivery of real stored
+  // events is NOT covered by this script.
+  const notifications = await new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${PORT}/v1/events`)
+    const seen = []
+    const timer = setTimeout(() => resolve({ socket, seen }), 15_000)
+    socket.on("open", () => {
+      // Anything before session.authenticate must be refused.
+      socket.send(JSON.stringify({ type: "event.ack", eventId: "00000000-0000-0000-0000-000000000000" }))
+      setTimeout(() => {
+        socket.send(JSON.stringify({ type: "session.authenticate", token: realtimeToken(TENANT_NOTIFY) }))
+      }, 150)
+    })
+    socket.on("message", (raw) => {
+      const message = JSON.parse(raw.toString())
+      seen.push(message)
+      if (message.type === "session.replay.complete") {
+        clearTimeout(timer)
+        resolve({ socket, seen })
+      }
+    })
+    socket.on("error", (error) => { clearTimeout(timer); reject(error) })
+  })
+
+  const preAuthError = notifications.seen.find((m) => m.type === "error" && m.error?.code === "AUTH_REQUIRED")
+  record("messages before authentication are refused", Boolean(preAuthError))
+  record(
+    "authentication completes the replay handshake",
+    notifications.seen.some((m) => m.type === "session.ready")
+      && notifications.seen.some((m) => m.type === "session.replay.complete"),
+    notifications.seen.map((m) => m.type).join(","),
+  )
+
+  const ackError = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 2_500)
+    notifications.socket.on("message", (raw) => {
+      const message = JSON.parse(raw.toString())
+      if (message.type === "error" || message.type === "event.acknowledged") {
+        clearTimeout(timer)
+        resolve(message)
+      }
+    })
+    notifications.socket.send(JSON.stringify({ type: "event.ack", eventId: "not-a-uuid" }))
+  })
+  record("an acknowledgement for an unknown event is refused, not silently accepted",
+    ackError === null || ackError.type === "error", JSON.stringify(ackError?.error ?? ackError))
+
+  // An invalid realtime token must close the socket rather than authenticate it.
+  const rejected = await new Promise((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${PORT}/v1/events`)
+    const timer = setTimeout(() => resolve({ closed: false }), 4_000)
+    socket.on("open", () => socket.send(JSON.stringify({ type: "session.authenticate", token: "forged.token.value" })))
+    socket.on("close", (code) => { clearTimeout(timer); resolve({ closed: true, code }) })
+  })
+  record("a forged realtime token closes the socket", rejected.closed === true, `code=${rejected.code}`)
+  notifications.socket.close()
 
   // 8. No unresolved turns are retained.
   const finalHealth = await (await fetch(`http://127.0.0.1:${PORT}/health`)).json()

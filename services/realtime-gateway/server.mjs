@@ -28,6 +28,8 @@ const gatewayId = `gateway_${randomUUID()}`
 const MAX_WS_PAYLOAD_BYTES = 256 * 1024
 const MAX_BROKER_BODY_BYTES = 64 * 1024
 const SIGNATURE_TOLERANCE_SECONDS = 120
+// Replay must terminate even if the database is slow or unreachable.
+const REPLAY_TIMEOUT_MS = 10_000
 const db = createClient(supabaseUrl, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
@@ -283,8 +285,33 @@ websocketServer.on("connection", (socket) => {
             },
           },
         })
-        await deliverTenant(claims.tenantId)
-        send(socket, { type: "session.replay.complete" })
+        // Replay must always be terminated. A failed claim previously threw past
+        // this point, leaving an agent that waits for session.replay.complete
+        // hanging forever. Report the outcome instead; nothing is lost, because
+        // undelivered events stay in the durable inbox and are retried by the
+        // sweep, by the next reconnect, or through the REST fallback.
+        let replay = "complete"
+        try {
+          // Bounded: a slow or unreachable database must not leave the agent
+          // waiting on a replay signal that never arrives.
+          await Promise.race([
+            deliverTenant(claims.tenantId),
+            new Promise((_resolve, reject) =>
+              setTimeout(() => reject(new Error("Event replay timed out")), REPLAY_TIMEOUT_MS).unref?.(),
+            ),
+          ])
+        } catch (error) {
+          replay = "deferred"
+          send(socket, {
+            type: "error",
+            error: {
+              code: "REPLAY_UNAVAILABLE",
+              message: error instanceof Error ? error.message : "Event replay failed",
+              recovery: "Events remain in the durable inbox. Retry over the socket or use POST /api/v1/events/list.",
+            },
+          })
+        }
+        send(socket, { type: "session.replay.complete", replay })
         return
       }
       if (message.type === "event.ack") return await acknowledge(socket, message.eventId)

@@ -337,6 +337,10 @@ Supported normalized events include email.received; phone.call.ended; phone.numb
 ~~~
 
 4. Receive session.ready, followed by deterministic event.delivery replay, then session.replay.complete.
+   Replay always terminates. If the inbox is temporarily unreadable you receive a
+   REPLAY_UNAVAILABLE error followed by session.replay.complete with replay:"deferred";
+   nothing is lost, because unacknowledged events stay in the durable inbox and
+   arrive on the next sweep, the next reconnect, or through POST /api/v1/events/list.
 5. After durable processing send:
 
 ~~~json
