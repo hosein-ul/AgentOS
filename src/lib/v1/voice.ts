@@ -1,5 +1,4 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto"
-import { ApiError } from "./http"
 
 // Synchronous live-voice turns. AgentPhone holds the phone call open while this
 // runs, so every path here is bounded and always produces a voice reply.
@@ -75,11 +74,9 @@ export function voiceFallback(status: VoiceTurnStatus): VoiceReply {
 function internalSecret() {
   const secret = process.env.REALTIME_GATEWAY_INTERNAL_SECRET
   if (!secret || secret.length < 32) {
-    throw new ApiError(
-      "PROVIDER_CONFIGURATION_ERROR",
-      "REALTIME_GATEWAY_INTERNAL_SECRET must be configured for live voice",
-      503,
-    )
+    // Caught by requestVoiceTurn and reported as an "unavailable" turn, so a
+    // misconfigured gateway still produces a safe spoken fallback.
+    throw new Error("REALTIME_GATEWAY_INTERNAL_SECRET must be configured for live voice")
   }
   return secret
 }
@@ -87,23 +84,19 @@ function internalSecret() {
 function internalUrl() {
   const configured = process.env.REALTIME_GATEWAY_INTERNAL_URL
   if (!configured) {
-    throw new ApiError(
-      "PROVIDER_CONFIGURATION_ERROR",
-      "REALTIME_GATEWAY_INTERNAL_URL must be configured for live voice",
-      503,
-    )
+    throw new Error("REALTIME_GATEWAY_INTERNAL_URL must be configured for live voice")
   }
   let url: URL
   try {
     url = new URL(configured)
   } catch {
-    throw new ApiError("PROVIDER_CONFIGURATION_ERROR", "REALTIME_GATEWAY_INTERNAL_URL is invalid", 503)
+    throw new Error("REALTIME_GATEWAY_INTERNAL_URL is invalid")
   }
   if (url.username || url.password) {
-    throw new ApiError("PROVIDER_CONFIGURATION_ERROR", "REALTIME_GATEWAY_INTERNAL_URL must not embed credentials", 503)
+    throw new Error("REALTIME_GATEWAY_INTERNAL_URL must not embed credentials")
   }
   if (url.protocol !== "https:" && process.env.NODE_ENV === "production") {
-    throw new ApiError("PROVIDER_CONFIGURATION_ERROR", "REALTIME_GATEWAY_INTERNAL_URL must be HTTPS in production", 503)
+    throw new Error("REALTIME_GATEWAY_INTERNAL_URL must be HTTPS in production")
   }
   return new URL("/internal/voice/turn", url).toString()
 }

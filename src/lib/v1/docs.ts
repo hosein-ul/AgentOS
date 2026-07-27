@@ -22,7 +22,7 @@ const machineCatalog = SERVICE_CATALOG.map((service) => [
 
 export const agentDocs = String.raw`# AgentOS ASP v1
 
-AgentOS is a wallet-isolated REST Agent Service Provider for OKX.AI. It provides real Resend email and AgentPhone telephony. Domain registration remains unavailable until fixed per-TLD prices and stable registrar egress are configured. AgentOS is not an MCP server, never returns simulated provider success, and does not expose phone recordings.
+AgentOS is a wallet-isolated REST Agent Service Provider for OKX.AI. It provides real Resend email and AgentPhone telephony. Domain registration is unavailable; Cloudflare-backed support is planned but not implemented. AgentOS is not an MCP server, never returns simulated provider success, and does not expose phone recordings.
 
 ## Canonical discovery
 
@@ -59,6 +59,32 @@ There is no paid token endpoint.
 The x402 payer of a secondary request must equal the wallet bound to the bearer token. A missing token returns ONBOARDING_REQUIRED, an invalid/revoked token returns AUTH_REQUIRED, and a valid token cannot access another tenant's resource. Resource ownership preflight occurs before payment preparation where an input ID identifies a mailbox, phone number, or call.
 
 Idempotency-Key is required on paid POSTs. It is not authentication and has no price. Reuse the same key only for a byte-equivalent retry. A key is bound to tenant, endpoint, request hash, and payment proof.
+
+## Access token recovery
+
+The access token is issued exactly once per wallet and is shown only once. AgentOS
+stores only its SHA-256 hash and can never show it again.
+
+Replaying the first provisioning request does not mint a second token. A completed
+idempotent replay returns the stored business response together with:
+
+~~~json
+{
+  "authentication": {
+    "status": "already_issued",
+    "accessToken": null,
+    "walletAddress": "0x...",
+    "guide": "/docs#access-token-recovery"
+  }
+}
+~~~
+
+The provider operation is not repeated and no payment is settled again. Retrying
+harder will never produce a token.
+
+If the token is lost, sign in at /dashboard with the owning wallet, issue a
+replacement, and revoke the old one. That wallet-signature flow is the only
+supported rotation and recovery path.
 
 ## Service catalog
 
@@ -149,11 +175,11 @@ Only email.received is normalized today because it is the Resend lifecycle curre
 
 ## Phone flow
 
-1. Buy a US or Canada number for 7.00 USDT / 30 days.
-2. Save the AgentOS access token, phoneNumberId, E.164 number, and one-time callbackVerificationSecret.
-3. AgentPhone calls AgentOS. AgentOS verifies provider HMAC and maps provider IDs to the owning tenant.
-4. AgentOS forwards each live agent.message to agentWebhookUrl with X-AgentOS-Timestamp and X-AgentOS-Signature.
-5. The external AI agent dynamically returns JSON such as {"text":"..."} or {"hangup":true}, or supported NDJSON.
+1. Buy a US or Canada number for 5.00 USDT / 30 days.
+2. Save the AgentOS access token, phoneNumberId, and E.164 number. There is no callback secret: your Agent never exposes a webhook.
+3. Open the live-voice WebSocket (see "Live voice protocol") and keep it authenticated for as long as the number should answer calls.
+4. AgentPhone calls AgentOS. AgentOS verifies the provider HMAC and maps provider IDs to the owning tenant.
+5. AgentOS sends one voice.turn to your connected socket and waits, briefly, for your voice.response.
 6. Start outbound packages with call-1-minute or call-5-minutes. Extend an active call with extend-call-1-minute.
 7. Prepay inbound time with add-inbound-minutes-10.
 8. Query calls and transcripts through free authenticated reads.
@@ -164,12 +190,94 @@ Purchase input:
 ~~~json
 {
   "agentName": "support-agent",
-  "agentWebhookUrl": "https://agent.example.com/voice",
   "areaCode": "415",
   "beginMessage": "Hello, how can I help?",
   "language": "en-US"
 }
 ~~~
+
+## Live voice protocol
+
+The customer Agent is never required to expose a public webhook, and AgentOS never
+calls a customer-supplied URL. Live calls flow one way only, outbound from your Agent:
+
+    AgentPhone
+      -> AgentOS provider webhook
+      -> AgentOS live gateway
+      -> customer Agent over WebSocket   (voice.turn)
+      -> customer Agent response         (voice.response)
+      -> AgentOS
+      -> AgentPhone TTS/voice response
+
+This is a different protocol from durable notifications, on the same socket:
+
+| | Durable notification events | Synchronous live voice turns |
+| --- | --- | --- |
+| Message | event.delivery | voice.turn |
+| Reply | event.ack | voice.response |
+| Stored in v1_events | yes | no |
+| Replayed after reconnect | yes | never |
+| Deadline | none; leased and redelivered | strict, stated per turn |
+| Missing it | redelivered later | safe fallback is spoken, call continues or ends |
+
+A durable event is never sent in place of a live voice turn, and a live voice turn is
+never persisted or replayed. Lifecycle events such as phone.call.ended remain durable
+events and must still be acknowledged.
+
+AgentOS -> Agent:
+
+~~~json
+{
+  "type": "voice.turn",
+  "turnId": "vt_...",
+  "callId": "uuid",
+  "phoneNumberId": "uuid",
+  "providerCallId": "...",
+  "direction": "inbound",
+  "fromNumber": "+14155550123",
+  "toNumber": "+14155550100",
+  "transcript": "what the caller said",
+  "deadline": "ISO-8601",
+  "deadlineMs": 8000
+}
+~~~
+
+Agent -> AgentOS, before the deadline:
+
+~~~json
+{ "type": "voice.response", "turnId": "vt_...", "text": "What the caller hears", "hangup": false }
+~~~
+
+To decline a turn and let AgentOS speak its fallback:
+
+~~~json
+{ "type": "voice.cancel", "turnId": "vt_..." }
+~~~
+
+If the deadline passes first, AgentOS sends voice.timeout for that turnId and a late
+voice.response is rejected.
+
+Rules enforced by the gateway:
+
+- turnId correlates the turn; a response with an unknown turnId is rejected.
+- A turn can be answered exactly once. The second voice.response is rejected.
+- A response is accepted only from a socket authenticated for the same tenant, so one
+  tenant can never answer another tenant's call.
+- Responses are validated and bounded: text is at most 2000 characters, and only
+  text, hangup, action and digits are forwarded. Anything else is dropped.
+- Frames are capped at 256 KiB. Pending turns are bounded; unresolved turns cannot
+  accumulate.
+
+A live call fails safely, never silently, when no authenticated socket is connected,
+the socket disconnects, the deadline passes, the response is invalid, the response
+belongs to another tenant, call or turn, or the same turn is answered twice. In each
+case AgentOS speaks a fallback line; an unreachable Agent ends the call, while a single
+slow turn keeps it alive.
+
+Only transcript text and text actions cross this boundary. AgentOS receives transcript
+text from AgentPhone and returns text or an action; no raw audio is stored or exposed.
+
+Outbound call:
 
 Outbound call:
 
@@ -187,7 +295,7 @@ AgentOS currently uses one operator AgentPhone billing account. The provider API
 
 ## Number renewal
 
-The internal entitlement is exactly 30 days. US and Canada purchases are each 7.00 USDT; renewal is explicitly fixed at 5.00 USDT. Durable jobs generate phone.number.expiring events 5, 3, and 1 days before expiry. Each event includes phoneNumberId, phone number, expiry, renewal deadline, fixed price, renewal endpoint, request body, and release warning.
+The internal entitlement is exactly 30 days. US and Canada purchases and renewal are each fixed at 5.00 USDT. Durable jobs generate phone.number.expiring events 5, 3, and 1 days before expiry. Each event includes phoneNumberId, phone number, expiry, renewal deadline, fixed price, renewal endpoint, request body, and release warning.
 
 Renew:
 
@@ -237,11 +345,29 @@ Supported normalized events include email.received; phone.call.ended; phone.numb
 
 6. Receive event.acknowledged. Use POST /api/v1/events/ack if the socket acknowledgement is ambiguous.
 
+The realtime token expires after 15 minutes. It is sent in the session.authenticate
+message, never in the URL. Reconnect with a fresh token; replay resumes from the
+durable inbox, so nothing is lost while disconnected.
+
+One socket carries two distinct protocols. Route by message type:
+
+- event.delivery / event.ack — durable notifications. Stored in v1_events, leased,
+  replayed after reconnect, redelivered if the lease expires without an ack.
+- voice.turn / voice.response / voice.cancel / voice.timeout — synchronous live voice.
+  Never stored, never replayed, always deadline-bound. See "Live voice protocol".
+
+session.ready advertises both under "protocols". Acknowledging a voice turn with
+event.ack, or answering a durable event with voice.response, is a protocol error.
+
 The no-expiry at_v1 API credential and short-lived realtime credential are intentionally different. Never put an API token in a WebSocket URL or log it.
 
 ## Domain flow
 
-The code contains a real Namecheap adapter, but public domain registration returns 503 without a payment challenge. Namecheap requires an allowlisted public IPv4; default dynamic Vercel egress is unsuitable. Before enabling Domain, AgentOS still needs fixed per-TLD register/renew prices, search/list/DNS/renew routes in v1, provider tests, static egress, and domain event normalization. Do not register domain.register on OKX until available=true.
+Domain is unavailable and is not close to production. POST /api/v1/domains/register returns HTTP 503 immediately: it issues no x402 challenge, creates and settles no payment, and contacts no registrar. The catalog record is available=false, paid=false, x402Price=null, registerOnOkx=false, startHere=false.
+
+Cloudflare-backed domain support is planned. It is not implemented, and no date is committed. Do not build against this endpoint, do not send payment, and do not register domain.register on OKX.
+
+An unused legacy Namecheap adapter remains in the tree. It is unreachable from v1 and its configuration is not a step toward enabling Domain.
 
 ## Scheduling and workers
 
@@ -270,7 +396,7 @@ Vercel Pro is required only if Vercel itself must invoke cron more than daily. I
 
 Apply migrations in timestamp order and run Supabase security/performance advisors. v1 server access uses only SUPABASE_SERVICE_ROLE_KEY; browser roles receive no table grants except the legacy Realtime policy retained for migration compatibility. The connected legacy tables must have RLS enabled and anon/authenticated grants revoked.
 
-Required groups: APP_URL; OKX credentials and payment wallet; Supabase URL/service role; Resend API/webhook/domain; AgentPhone API/base URL; PHONE_SECRET_ENCRYPTION_KEY; CRON_SECRET; REALTIME_GATEWAY_URL and REALTIME_GATEWAY_JWT_SECRET; DASHBOARD_SESSION_SECRET; private admin Basic credentials. Domain variables remain unset until production activation.
+Required groups: APP_URL; OKX credentials and payment wallet; Supabase URL/service role; Resend API/webhook/domain; AgentPhone API/base URL; PHONE_SECRET_ENCRYPTION_KEY; CRON_SECRET; REALTIME_GATEWAY_URL, REALTIME_GATEWAY_JWT_SECRET and REALTIME_GATEWAY_INTERNAL_URL/REALTIME_GATEWAY_INTERNAL_SECRET for the live-voice broker hop; AGENTOS_APP_URL for the worker; DASHBOARD_SESSION_SECRET; private admin Basic credentials. Every canonical public URL comes from configuration; no deployment domain is hardcoded. Domain variables remain unset.
 
 Dashboard paths use a wallet-signature HttpOnly owner session and are not an agent auth surface. The separate /admin path uses operator Basic Auth. Provider webhooks and internal worker routes are infrastructure, not marketplace services.
 `
@@ -313,9 +439,10 @@ Send body: {"mailboxId":"uuid","to":["recipient@example.com"],"subject":"Subject
 
 ## Phone Flow
 
-Buy number for 7.00 USDT / 30 days → save token/phoneNumberId/callback secret → accept signed live voice callbacks → return dynamic text/hangup → buy outbound call packages or inbound allowance → monitor phone.number.expiring → renew for 5.00 USDT / 30 days → release safely when no longer needed.
+Buy number for 5.00 USDT / 30 days → save token and phoneNumberId → connect the live-voice WebSocket → answer voice.turn with voice.response before the deadline → buy outbound call packages or inbound allowance → monitor phone.number.expiring → renew for 5.00 USDT / 30 days → release safely when no longer needed.
 
-Buy body: {"agentName":"support-agent","agentWebhookUrl":"https://agent.example.com/voice","areaCode":"415"}
+Buy body: {"agentName":"support-agent","areaCode":"415"}
+No customer webhook and no callback secret. Live calls are answered over the WebSocket; see the live voice protocol.
 Call body: {"phoneNumberId":"uuid","toNumber":"+14155550123"}
 Renew body: {"phoneNumberId":"uuid"}
 Release body: {"phoneNumberId":"uuid","confirmRelease":true}
@@ -324,7 +451,7 @@ Recordings are never enabled or exposed. Use transcripts.
 
 ## Domain Flow
 
-Unavailable today. The real adapter requires fixed per-TLD services and static allowlisted Namecheap egress. available=false means do not pay and do not register the service on OKX.
+Unavailable. POST /api/v1/domains/register returns 503 with no payment challenge and no registrar call. Cloudflare-backed support is planned but not implemented. available=false means do not pay and do not register the service on OKX.
 
 ## Event Delivery
 

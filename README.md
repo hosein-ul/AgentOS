@@ -21,7 +21,7 @@ Agents need durable identities and communication infrastructure, not one-off too
 | --- | --- | --- | --- |
 | Email | Resend | v1 mailbox/send/query and verified inbound event flow implemented | Requires v1 migrations and provider E2E |
 | Phone | AgentPhone | v1 number/call/renew/release/transcript and durable jobs implemented | Requires v1 migrations, worker, gateway, and funded provider E2E |
-| Domain | Namecheap adapter | real adapter exists, public v1 route is fail-closed | Not marketplace-ready |
+| Domain | none (Cloudflare planned) | unavailable; v1 route is fail-closed 503 | Not implemented |
 | Realtime | Separate Node WebSocket gateway + Supabase | gateway, replay, delivery lease, and socket ack implemented | Not yet deployed |
 | Scheduling | Supabase jobs + separate worker + daily Vercel sweep | implemented in repository | AgentOS is not linked to a connected Vercel project |
 
@@ -42,7 +42,6 @@ flowchart LR
   V --> P["AgentPhone"]
   P -->|"signed live webhook"| V
   V -->|"signed callback"| A
-  V -. "disabled until static egress" .-> N["Namecheap"]
 ```
 
 Postgres is the source of truth for tenants, token hashes, payment/idempotency ledgers, provider resources, events, entitlements, and jobs. WebSocket delivery never replaces durable persistence.
@@ -139,16 +138,18 @@ The event carries IDs, sender, subject, and time. It omits body and attachment c
 
 ## Phone architecture
 
-Phone provisioning creates a real AgentPhone webhook-mode agent and number. The caller supplies a public HTTPS `agentWebhookUrl`. AgentOS returns a one-time callback verification secret and stores it encrypted.
+Phone provisioning creates a real AgentPhone agent and number. The customer Agent never exposes a public webhook and AgentOS never calls a customer-supplied URL: live calls are answered over the AgentOS WebSocket gateway.
 
 Live conversation:
 
 1. AgentPhone signs a provider webhook to AgentOS.
 2. AgentOS verifies HMAC/replay window and resolves the exact tenant.
 3. Recording/media URL fields are stripped.
-4. The event is forwarded to the external agent with an AgentOS timestamped HMAC.
-5. The agent dynamically returns text, hangup, or a supported NDJSON stream.
+4. AgentOS sends one `voice.turn` to that tenant's authenticated WebSocket and waits, briefly, for `voice.response`.
+5. The agent dynamically returns text or hangup before the stated deadline.
 6. AgentOS relays that response to AgentPhone.
+
+A turn is answered exactly once, only by a socket authenticated for the same tenant, and only before its deadline. If no socket is connected, the socket drops, the deadline passes, or the reply is invalid or belongs to another tenant, AgentOS speaks a safe fallback instead of failing silently. Turns are never persisted or replayed; durable lifecycle events such as `phone.call.ended` still go through the event inbox. See `/docs#live-voice-protocol`.
 
 AgentOS does not substitute a preconfigured hosted assistant. The external AI agent controls the conversation turn by turn.
 
@@ -212,7 +213,7 @@ Pro is needed only if Vercel itself must schedule more than daily. Even on Pro, 
 
 Local migrations:
 
-1. `20260723_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
+1. `20260724105651_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
 2. `20260724064040_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
 3. `20260724150000_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
 4. `20260724160000_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
@@ -234,7 +235,7 @@ Copy `.env.example` and configure:
 - scheduling: `CRON_SECRET`;
 - realtime: WSS gateway URL and JWT secret;
 - external worker: app URL and interval;
-- Namecheap values only after Domain activation.
+- Leave Domain variables unset; Domain is unavailable.
 
 Never commit real provider or payment credentials. Rotate any secret posted in chat or issue history.
 
@@ -281,7 +282,7 @@ Deploy `npm run durable-worker` as a single or horizontally safe long-lived proc
 
 - Resend webhook: `https://APP_URL/api/v1/webhooks/resend`.
 - AgentPhone webhook is configured per agent during purchase.
-- Namecheap must have stable allowlisted IPv4 before enabling Domain.
+- Domain requires Cloudflare-backed support that is not implemented; no configuration enables it.
 
 ## Dashboard
 

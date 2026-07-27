@@ -33,7 +33,7 @@ Available first provisioning calls:
 | `phone.number.us.30d` | POST `/api/v1/phone/purchase-us-number-30-days` | 5.00 USDT |
 | `phone.number.ca.30d` | POST `/api/v1/phone/purchase-canada-number-30-days` | 5.00 USDT |
 
-`domain.register` exists only as a fail-closed 503 route. It never requests or settles payment until fixed per-TLD services and stable registrar egress are ready.
+`domain.register` is unavailable and exists only as a fail-closed 503 route. It never issues an x402 challenge, never requests or settles payment, and never contacts a registrar. Cloudflare-backed domain support is planned but not implemented.
 
 Calling any secondary paid endpoint without a token returns HTTP 428:
 
@@ -50,8 +50,7 @@ Calling any secondary paid endpoint without a token returns HTTP 428:
       "price": "5.00",
       "currency": "USDT",
       "requiredInput": {
-        "agentName": "Agent name",
-        "agentWebhookUrl": "Public HTTPS live-agent callback URL"
+        "agentName": "Agent name"
       }
     }
   },
@@ -156,33 +155,83 @@ Purchase:
 ```json
 {
   "agentName": "support-agent",
-  "agentWebhookUrl": "https://agent.example.com/voice",
   "areaCode": "415",
   "beginMessage": "Hello, how can I help?",
   "language": "en-US"
 }
 ```
 
-The response contains the AgentOS `phoneNumberId`, E.164 number, entitlement dates, and a one-time callback verification secret. AgentOS creates a real AgentPhone webhook-mode agent and number.
+The response contains the AgentOS `phoneNumberId`, E.164 number, entitlement dates, and live-voice connection instructions. AgentOS creates a real AgentPhone agent and number. There is no `agentWebhookUrl` and no customer callback secret.
 
-AgentPhone sends signed live events to `/api/v1/webhooks/agentphone`. AgentOS verifies provider HMAC, strips recording/media URL fields, resolves the exact tenant, and forwards the event to the supplied callback with:
+### Live voice over WebSocket
+
+The customer Agent never exposes a public webhook, and AgentOS never calls a customer-supplied URL. The Agent connects out to the AgentOS gateway and answers turns in real time:
 
 ```text
-X-AgentOS-Timestamp: unix-seconds
-X-AgentOS-Signature: sha256=HMAC_SHA256(callbackSecret, timestamp + "." + exactRawJson)
+AgentPhone
+  -> AgentOS provider webhook   (/api/v1/webhooks/agentphone, provider HMAC verified)
+  -> AgentOS live gateway
+  -> customer Agent over WebSocket   (voice.turn)
+  -> customer Agent response         (voice.response)
+  -> AgentOS
+  -> AgentPhone TTS/voice response
 ```
 
-For `agent.message`, the external agent responds dynamically:
+Authenticate the socket exactly as for durable events (`GET /api/v1/events/realtime-token`, then `session.authenticate`). The same socket then carries two distinct protocols:
+
+| | Durable notification events | Synchronous live voice turns |
+| --- | --- | --- |
+| Message | `event.delivery` | `voice.turn` |
+| Reply | `event.ack` | `voice.response` |
+| Stored in `v1_events` | yes | no |
+| Replayed after reconnect | yes | never |
+| Deadline | none; leased and redelivered | strict, stated per turn |
+
+A durable event is never used in place of a live voice turn. Lifecycle events such as `phone.call.ended` stay durable and must still be acknowledged.
+
+AgentOS sends:
 
 ```json
-{"text":"The live response"}
+{
+  "type": "voice.turn",
+  "turnId": "vt_...",
+  "callId": "uuid",
+  "phoneNumberId": "uuid",
+  "providerCallId": "...",
+  "direction": "inbound",
+  "fromNumber": "+14155550123",
+  "toNumber": "+14155550100",
+  "transcript": "what the caller said",
+  "deadline": "ISO-8601",
+  "deadlineMs": 8000
+}
 ```
 
-or:
+The Agent answers before the deadline:
 
 ```json
-{"hangup":true}
+{"type":"voice.response","turnId":"vt_...","text":"The live response","hangup":false}
 ```
+
+or ends the call:
+
+```json
+{"type":"voice.response","turnId":"vt_...","hangup":true}
+```
+
+or declines the turn and lets AgentOS speak its fallback:
+
+```json
+{"type":"voice.cancel","turnId":"vt_..."}
+```
+
+If the deadline passes first, AgentOS sends `voice.timeout` for that `turnId` and a late response is rejected.
+
+Enforced by the gateway: a turn is answered exactly once; a response is accepted only from a socket authenticated for the same tenant; unknown `turnId`s are rejected; `text` is capped at 2000 characters; only `text`, `hangup`, `action` and `digits` are forwarded; frames are capped at 256 KiB; pending turns are bounded.
+
+The call fails safely, never silently, when no authenticated socket is connected, the socket disconnects, the deadline passes, the response is invalid, the response belongs to another tenant/call/turn, or the same turn is answered twice. AgentOS then speaks a fallback line: an unreachable Agent ends the call, a single slow turn keeps it alive.
+
+Only transcript text and text actions cross this boundary. AgentOS receives transcript text from AgentPhone and returns text or an action. No raw audio is stored or exposed.
 
 Recording is out of scope. No recording controls, endpoints, URLs, or prices are exposed. Only transcripts are available.
 
@@ -388,11 +437,9 @@ Worker/realtime:
 - `REALTIME_GATEWAY_JWT_SECRET`
 - worker-only `AGENTOS_APP_URL`, optional `WORKER_INTERVAL_MS`
 
-Domain (disabled until ready):
+Domain (unavailable; not close to production):
 
-- `NAMECHEAP_API_USER`, `NAMECHEAP_API_KEY`, `NAMECHEAP_USERNAME`
-- `NAMECHEAP_CLIENT_IP`, `NAMECHEAP_SANDBOX`
-- `DOMAIN_CONTACT_ENCRYPTION_KEY`
+Leave every Domain variable unset. The legacy Namecheap variables belong to an unused adapter; setting them does not enable Domain and is not a step toward it.
 
 ## Local development and deployment
 
@@ -426,7 +473,7 @@ Provider setup:
 
 - Resend webhook: `https://APP_URL/api/v1/webhooks/resend`.
 - AgentPhone webhooks are configured during phone provisioning.
-- Namecheap requires a stable allowlisted public IPv4 before Domain can be enabled.
+- Domain stays unavailable. Enabling it requires Cloudflare-backed support that is not implemented; no configuration change turns it on.
 
 ## Errors and recovery
 

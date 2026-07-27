@@ -18,7 +18,7 @@ import {
   requestHash,
 } from "./idempotency"
 import { prepareV1Payment, settleV1Payment } from "./payment"
-import { getServiceByEndpoint, SERVICE_CATALOG } from "./service-catalog"
+import { getServiceByEndpoint, getServiceById, SERVICE_CATALOG } from "./service-catalog"
 
 export const guide = "/docs#api-contract"
 
@@ -157,9 +157,30 @@ function attachAlreadyIssuedNotice(body: unknown, tenant: Tenant) {
   return { ...response, authentication }
 }
 
-export async function v1Read(request: NextRequest, handler: (tenant: Tenant) => Promise<unknown>) {
+/**
+ * GET-native business endpoints keep their normal behaviour. `serviceId` only
+ * adds a link to the machine-readable guide for the operation, so agents can
+ * discover usage without the GET contract changing.
+ */
+export async function v1Read(
+  request: NextRequest,
+  handler: (tenant: Tenant) => Promise<unknown>,
+  serviceId?: string,
+) {
   try {
-    return apiData(await handler(await requireTenant(request)), guide)
+    const service = serviceId ? getServiceById(serviceId) : null
+    const response = await apiData(await handler(await requireTenant(request)), guide)
+    if (!service) return response
+    const payload = await response.clone().json() as Record<string, unknown>
+    return NextResponse.json({
+      ...payload,
+      serviceId: service.id,
+      guides: {
+        ...(payload.guides as Record<string, unknown>),
+        serviceGuide: `/api/v1/services/${service.id}`,
+        operation: service.guide,
+      },
+    }, { status: response.status })
   } catch (error) {
     return apiError(error, guide)
   }
