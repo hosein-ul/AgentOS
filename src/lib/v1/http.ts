@@ -12,8 +12,17 @@ export type ApiErrorCode =
   | "PROVIDER_ERROR"
   | "IDEMPOTENCY_CONFLICT"
 
+// Fields are declared explicitly rather than as constructor parameter properties
+// so this module loads under Node's type-stripping runtime used by the tests.
 export class ApiError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status = 400) { super(message) }
+  readonly code: string
+  readonly status: number
+
+  constructor(code: string, message: string, status = 400) {
+    super(message)
+    this.code = code
+    this.status = status
+  }
 }
 
 export function requestId() {

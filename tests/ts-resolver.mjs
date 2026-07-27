@@ -20,8 +20,8 @@ export async function resolve(specifier, context, nextResolve) {
   try {
     return await nextResolve(rewritten, context)
   } catch (error) {
-    const relative = rewritten.startsWith(".") || rewritten.startsWith("file:")
-    if (!relative) throw error
+    // Retry with the extensions the bundler would have supplied. This covers both
+    // relative source imports and package subpaths such as "next/server".
     for (const suffix of CANDIDATE_SUFFIXES) {
       try {
         return await nextResolve(`${rewritten}${suffix}`, context)

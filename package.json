@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types --import ./tests/ts-resolver.mjs tests/*.test.mts",
+    "test": "node --test --experimental-strip-types --experimental-test-module-mocks --import ./tests/ts-resolver.mjs tests/*.test.mts",
     "realtime-gateway": "node services/realtime-gateway/server.mjs",
     "durable-worker": "node services/durable-worker/worker.mjs"
   },
@@ -34,6 +34,9 @@
     "@supabase/supabase-js": "^2.110.5",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-table": "^8.21.3",
+    "@x402/core": "^2.19.0",
+    "@x402/evm": "^2.19.0",
+    "@x402/svm": "^2.19.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

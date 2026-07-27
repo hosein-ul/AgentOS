@@ -457,7 +457,10 @@ export async function releasePhoneNumber(tenant: Tenant, body: Record<string, un
   } catch (error) {
     const provider = await getAgentPhoneNumber(number.provider_number_id, number.provider_sub_account_id).catch(() => null)
     if (provider?.status !== "released") {
-      await db.from("v1_phone_numbers").update({ lifecycle_status: "release_failed", updated_at: new Date().toISOString() }).eq("id", number.id)
+      await db.from("v1_phone_numbers")
+        .update({ lifecycle_status: "release_failed", updated_at: new Date().toISOString() })
+        .eq("id", number.id)
+        .eq("tenant_id", tenant.id)
       throw error
     }
   }
