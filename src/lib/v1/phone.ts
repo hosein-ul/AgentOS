@@ -10,9 +10,7 @@ import {
   getAgentPhoneCall,
   getAgentPhoneNumber,
   getAgentPhoneTranscript,
-  newAgentCallbackSecret,
   releaseAgentPhoneNumber,
-  requireSafeAgentWebhookUrl,
 } from "./agentphone"
 import { ApiError, requiredString } from "./http"
 import {
@@ -27,6 +25,7 @@ import { encryptPhoneSecret } from "./secrets"
 import { PHONE_SERVICES, type ServiceCatalogEntry } from "./service-catalog"
 import { appUrl, isSafeProductionUrl } from "./config"
 import { createDurableEvent } from "./events"
+import { VOICE_TURN_DEADLINE_MS } from "./voice"
 
 const ACTIVE_NUMBER_STATES = ["active", "renewal_due", "renewal_authorized"]
 const ACTIVE_CALL_STATES = ["initiated", "ringing", "in-progress", "active"]
@@ -45,8 +44,6 @@ type NumberRow = {
   renewal_deadline: string | null
   inbound_seconds_balance: number
   inbound_seconds_reserved: number
-  agent_webhook_url: string
-  agent_webhook_secret_encrypted: string | null
   provider_webhook_secret_encrypted: string | null
 }
 
@@ -55,6 +52,24 @@ function optionalString(body: Record<string, unknown>, field: string, max: numbe
   const value = requiredString(body, field, max)
   if (!value) throw new ApiError("invalid_request", `${field} must be a non-empty string of at most ${max} characters`)
   return value
+}
+
+// How a customer Agent answers live calls. There is no customer webhook and no
+// customer callback secret: the Agent dials out to the AgentOS gateway with a
+// short-lived realtime token and replies to voice.turn on that socket.
+export function liveVoiceInstructions() {
+  return {
+    transport: "websocket",
+    realtimeTokenEndpoint: "/api/v1/events/realtime-token",
+    authenticate: { type: "session.authenticate", token: "<realtime token>" },
+    turn: "voice.turn",
+    respondWith: { type: "voice.response", turnId: "<turnId from voice.turn>", text: "<what the caller hears>", hangup: false },
+    cancel: { type: "voice.cancel", turnId: "<turnId from voice.turn>" },
+    expired: "voice.timeout",
+    deadlineMs: VOICE_TURN_DEADLINE_MS,
+    note: "Answer before the deadline in voice.turn. Missing the deadline plays a safe fallback; it does not fail the call. Durable lifecycle events such as phone.call.ended arrive separately as event.delivery and must be acknowledged.",
+    guide: "/docs#live-voice-protocol",
+  }
 }
 
 function phoneNumberId(body: Record<string, unknown>) {
@@ -87,7 +102,7 @@ function publicNumber(row: Record<string, unknown>) {
 async function ownedNumber(tenant: Tenant, id: string, activeOnly = true): Promise<NumberRow> {
   let query = requireServerSupabase()
     .from("v1_phone_numbers")
-    .select("id,tenant_id,phone_number,provider_number_id,provider_agent_id,provider_sub_account_id,lifecycle_status,entitlement_started_at,entitlement_expires_at,renewal_deadline,inbound_seconds_balance,inbound_seconds_reserved,agent_webhook_url,agent_webhook_secret_encrypted,provider_webhook_secret_encrypted")
+    .select("id,tenant_id,phone_number,provider_number_id,provider_agent_id,provider_sub_account_id,lifecycle_status,entitlement_started_at,entitlement_expires_at,renewal_deadline,inbound_seconds_balance,inbound_seconds_reserved,provider_webhook_secret_encrypted")
     .eq("id", id)
     .eq("tenant_id", tenant.id)
   if (activeOnly) query = query.in("lifecycle_status", ACTIVE_NUMBER_STATES)
@@ -128,7 +143,6 @@ export async function purchasePhoneNumber(
 ) {
   const agentName = requiredString(body, "agentName", 120)
   if (!agentName) throw new ApiError("invalid_request", "agentName is required")
-  const agentWebhookUrl = await requireSafeAgentWebhookUrl(body.agentWebhookUrl)
   const areaCode = optionalString(body, "areaCode", 3)
   if (areaCode && !/^\d{3}$/.test(areaCode)) throw new ApiError("invalid_request", "areaCode must contain exactly three digits")
   const description = optionalString(body, "description", 500)
@@ -139,7 +153,6 @@ export async function purchasePhoneNumber(
   let providerAgentId: string | undefined
   let providerNumberId: string | undefined
   let persistedNumberId: string | undefined
-  const callbackSecret = newAgentCallbackSecret()
 
   try {
     const providerAgent = await createAgentPhoneAgent({
@@ -182,8 +195,6 @@ export async function purchasePhoneNumber(
         country,
         area_code: areaCode,
         agent_name: agentName,
-        agent_webhook_url: agentWebhookUrl,
-        agent_webhook_secret_encrypted: encryptPhoneSecret(callbackSecret),
         provider_webhook_secret_encrypted: encryptPhoneSecret(providerWebhook.secret),
         provider_created_at: providerNumber.createdAt,
         entitlement_started_at: lifecycle.startsAt,
@@ -216,13 +227,13 @@ export async function purchasePhoneNumber(
       ...publicNumber(data as Record<string, unknown>),
       agent: {
         name: agentName,
-        mode: "webhook",
-        webhookUrl: agentWebhookUrl,
-        callbackVerificationSecret: callbackSecret,
-        warning: "Store this callback verification secret now. It is shown only once.",
+        mode: "websocket",
+        // The customer Agent never exposes a public webhook. It connects out to
+        // the AgentOS gateway and answers voice.turn messages in real time.
+        liveVoice: liveVoiceInstructions(),
       },
       price: { amount: service.amount, currency: service.currency, entitlementDays: 30 },
-      guides: { docs: "/docs#phone", llms: "/llms.txt", openapi: "/openapi.json" },
+      guides: { docs: "/docs#phone-flow", llms: "/llms.txt", openapi: "/openapi.json" },
     }
   } catch (error) {
     const cleanup = await cleanupProvisioning({
@@ -363,7 +374,6 @@ export async function startOutboundCall(
     status: provider.status,
     from_number: number.phone_number,
     to_number: toNumber,
-    agent_webhook_url: number.agent_webhook_url,
     authorized_seconds: authorizedSeconds,
     source_service_id: service.id,
   }).select("id,provider_call_id,status,authorized_seconds,created_at").single()

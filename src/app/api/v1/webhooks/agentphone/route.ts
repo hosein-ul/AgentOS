@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireServerSupabase } from "@/lib/supabase"
 import {
-  callAgentWebhook,
   getAgentPhoneCall,
-  safeVoiceWebhookResponse,
   stripProviderMediaFields,
   type AgentPhoneWebhookEvent,
   verifyAgentPhoneWebhook,
@@ -12,6 +10,7 @@ import { createDurableEvent } from "@/lib/v1/events"
 import { apiError, ApiError } from "@/lib/v1/http"
 import { enqueueCallEnd } from "@/lib/v1/jobs"
 import { decryptPhoneSecret } from "@/lib/v1/secrets"
+import { requestVoiceTurn, voiceFallback } from "@/lib/v1/voice"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -27,9 +26,16 @@ type PhoneRow = {
   entitlement_expires_at: string | null
   inbound_seconds_balance: number
   inbound_seconds_reserved: number
-  agent_webhook_url: string
-  agent_webhook_secret_encrypted: string
   provider_webhook_secret_encrypted: string
+}
+
+function transcriptText(event: AgentPhoneWebhookEvent) {
+  const data = event.data ?? {}
+  for (const key of ["transcript", "text", "message", "utterance"]) {
+    const value = (data as Record<string, unknown>)[key]
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 4_000)
+  }
+  return null
 }
 
 function stringField(value: unknown) {
@@ -43,7 +49,7 @@ async function findPhone(event: AgentPhoneWebhookEvent) {
   const db = requireServerSupabase()
   let query = db
     .from("v1_phone_numbers")
-    .select("id,tenant_id,phone_number,provider_number_id,provider_agent_id,provider_sub_account_id,lifecycle_status,entitlement_expires_at,inbound_seconds_balance,inbound_seconds_reserved,agent_webhook_url,agent_webhook_secret_encrypted,provider_webhook_secret_encrypted")
+    .select("id,tenant_id,phone_number,provider_number_id,provider_agent_id,provider_sub_account_id,lifecycle_status,entitlement_expires_at,inbound_seconds_balance,inbound_seconds_reserved,provider_webhook_secret_encrypted")
     .eq("provider", "agentphone")
   query = agentId ? query.eq("provider_agent_id", agentId) : query.eq("provider_number_id", numberId!)
   const { data, error } = await query.maybeSingle()
@@ -65,7 +71,6 @@ async function ensureInboundCall(phone: PhoneRow, event: AgentPhoneWebhookEvent)
     p_started_at: providerCall.startedAt ?? new Date().toISOString(),
     p_from_number: stringField(event.data?.from),
     p_to_number: stringField(event.data?.to) ?? phone.phone_number,
-    p_agent_webhook_url: phone.agent_webhook_url,
   })
   if (error || !data) {
     throw new Error(`Inbound call reservation failed: ${error?.message ?? "missing row"}`)
@@ -200,20 +205,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ text: "Inbound calling time is unavailable.", hangup: true })
     }
 
-    if (!phone.agent_webhook_secret_encrypted) {
-      throw new ApiError("provider_configuration_error", "Agent callback verification secret is unavailable", 503)
-    }
-    const callback = await callAgentWebhook({
-      url: phone.agent_webhook_url,
-      callbackSecret: decryptPhoneSecret(phone.agent_webhook_secret_encrypted),
-      event,
-    })
+    // Live voice turn: the caller is on the line, so this must answer within a
+    // strict deadline. AgentOS brokers the turn to the tenant's connected Agent
+    // socket through the realtime gateway; it never calls a customer webhook and
+    // never substitutes a durable notification for a synchronous turn.
     if (event.channel === "voice" && event.event === "agent.message") {
-      const response = await safeVoiceWebhookResponse(callback)
+      const turn = await requestVoiceTurn({
+        tenantId: phone.tenant_id,
+        callId: call?.id ?? null,
+        phoneNumberId: phone.id,
+        providerCallId: stringField(event.data?.callId),
+        direction: call?.direction ?? (stringField(event.data?.direction) ?? null),
+        fromNumber: stringField(event.data?.from),
+        toNumber: stringField(event.data?.to) ?? phone.phone_number,
+        transcript: transcriptText(event),
+        event: event.event,
+      })
       await markProcessed(webhookId)
-      return response
+      const reply = turn.status === "answered" && turn.response
+        ? turn.response
+        : voiceFallback(turn.status)
+      return NextResponse.json(reply, { headers: { "cache-control": "no-store" } })
     }
-    if (!callback.ok) throw new ApiError("provider_error", `Agent callback returned HTTP ${callback.status}`, 502)
     await markProcessed(webhookId)
     return NextResponse.json({ received: true })
   } catch (error) {

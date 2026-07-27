@@ -2,21 +2,38 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto"
 import { createServer } from "node:http"
 import { createClient } from "@supabase/supabase-js"
 import { WebSocket, WebSocketServer } from "ws"
+import {
+  VOICE_CANCEL_MESSAGE,
+  VOICE_RESPONSE_MESSAGE,
+  VoiceTurnRegistry,
+} from "./voice-turns.mjs"
 
 const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
-const required = ["SUPABASE_SERVICE_ROLE_KEY", "REALTIME_GATEWAY_JWT_SECRET"]
+const required = [
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "REALTIME_GATEWAY_JWT_SECRET",
+  "REALTIME_GATEWAY_INTERNAL_SECRET",
+]
 for (const name of required) {
   if (!process.env[name]) throw new Error(`${name} is required`)
+}
+if (process.env.REALTIME_GATEWAY_INTERNAL_SECRET.length < 32) {
+  throw new Error("REALTIME_GATEWAY_INTERNAL_SECRET must be at least 32 characters")
 }
 if (!supabaseUrl) throw new Error("SUPABASE_URL or NEXT_PUBLIC_SUPABASE_URL is required")
 
 const port = Number(process.env.PORT ?? 8787)
 const gatewayId = `gateway_${randomUUID()}`
+// Bound every inbound frame; an agent cannot exhaust gateway memory with one message.
+const MAX_WS_PAYLOAD_BYTES = 256 * 1024
+const MAX_BROKER_BODY_BYTES = 64 * 1024
+const SIGNATURE_TOLERANCE_SECONDS = 120
 const db = createClient(supabaseUrl, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 const socketsByTenant = new Map()
 const deliveryLocks = new Map()
+const voiceTurns = new VoiceTurnRegistry()
 
 function send(socket, value) {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value))
@@ -118,17 +135,121 @@ async function acknowledge(socket, eventId) {
   send(socket, { type: "event.acknowledged", eventId, acknowledgedAt })
 }
 
+function json(response, status, body) {
+  response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" })
+  response.end(JSON.stringify(body))
+}
+
+function verifyBrokerSignature(rawBody, headers) {
+  const signature = headers["x-agentos-signature"]
+  const timestamp = headers["x-agentos-timestamp"]
+  if (typeof signature !== "string" || typeof timestamp !== "string") return false
+  const seconds = Number(timestamp)
+  if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > SIGNATURE_TOLERANCE_SECONDS) return false
+  const expected = Buffer.from(
+    `sha256=${createHmac("sha256", process.env.REALTIME_GATEWAY_INTERNAL_SECRET)
+      .update(`${timestamp}.${rawBody}`)
+      .digest("hex")}`,
+  )
+  const actual = Buffer.from(signature)
+  return expected.length === actual.length && timingSafeEqual(actual, expected)
+}
+
+function readBoundedBody(request) {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks = []
+    request.on("data", (chunk) => {
+      size += chunk.length
+      if (size > MAX_BROKER_BODY_BYTES) {
+        reject(new Error("body_too_large"))
+        request.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")))
+    request.on("error", reject)
+  })
+}
+
+function liveSocketForTenant(tenantId) {
+  for (const socket of socketsByTenant.get(tenantId) ?? []) {
+    if (socket.readyState === WebSocket.OPEN && socket.tenantId === tenantId) return socket
+  }
+  return null
+}
+
+// Internal broker hop. AgentOS holds the AgentPhone webhook open and asks the
+// gateway to run one live turn against the tenant's connected Agent socket.
+// Authenticated with a shared HMAC; never exposed to customers.
+async function handleVoiceTurn(request, response) {
+  let raw
+  try {
+    raw = await readBoundedBody(request)
+  } catch {
+    return json(response, 413, { status: "invalid", reason: "body_too_large" })
+  }
+  if (!verifyBrokerSignature(raw, request.headers)) {
+    return json(response, 401, { status: "invalid", reason: "bad_signature" })
+  }
+  let payload
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return json(response, 400, { status: "invalid", reason: "invalid_json" })
+  }
+  const tenantId = payload?.tenantId
+  const turnId = payload?.turnId
+  if (typeof tenantId !== "string" || !tenantId || typeof turnId !== "string" || !turnId) {
+    return json(response, 400, { status: "invalid", reason: "tenant_and_turn_required" })
+  }
+
+  const socket = liveSocketForTenant(tenantId)
+  if (!socket) return json(response, 200, { status: "no_socket", reason: "no_authenticated_socket" })
+
+  const result = await voiceTurns.open({
+    turnId,
+    tenantId,
+    socket,
+    send,
+    deadlineMs: payload.deadlineMs,
+    callId: payload.callId,
+    phoneNumberId: payload.phoneNumberId,
+    providerCallId: payload.providerCallId,
+    direction: payload.direction,
+    fromNumber: payload.fromNumber,
+    toNumber: payload.toNumber,
+    transcript: payload.transcript,
+    event: payload.event,
+  })
+  return json(response, 200, result)
+}
+
 const server = createServer((request, response) => {
   if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
-    response.end(JSON.stringify({ ok: true, service: "agentos-realtime-gateway" }))
+    return json(response, 200, {
+      ok: true,
+      service: "agentos-realtime-gateway",
+      pendingVoiceTurns: voiceTurns.size,
+      connectedTenants: socketsByTenant.size,
+    })
+  }
+  if (request.url === "/internal/voice/turn" && request.method === "POST") {
+    handleVoiceTurn(request, response).catch(() => {
+      json(response, 500, { status: "unavailable", reason: "gateway_error" })
+    })
     return
   }
   response.writeHead(404)
   response.end()
 })
 
-const websocketServer = new WebSocketServer({ server, path: "/v1/events" })
+const websocketServer = new WebSocketServer({
+  server,
+  path: "/v1/events",
+  maxPayload: MAX_WS_PAYLOAD_BYTES,
+})
 websocketServer.on("connection", (socket) => {
   const authDeadline = setTimeout(() => socket.close(4401, "Authentication timeout"), 10_000)
   socket.on("message", async (raw) => {
@@ -150,12 +271,43 @@ websocketServer.on("connection", (socket) => {
           tenantScoped: true,
           replay: "starting",
           tokenExpiresAt: new Date(claims.expiresAt * 1000).toISOString(),
+          protocols: {
+            // Durable: stored, replayed after reconnect, explicitly acknowledged.
+            notifications: { delivery: "event.delivery", acknowledge: "event.ack" },
+            // Synchronous: a caller is on the line. Never stored, never replayed.
+            voice: {
+              turn: "voice.turn",
+              respond: "voice.response",
+              cancel: "voice.cancel",
+              expired: "voice.timeout",
+            },
+          },
         })
         await deliverTenant(claims.tenantId)
         send(socket, { type: "session.replay.complete" })
         return
       }
       if (message.type === "event.ack") return await acknowledge(socket, message.eventId)
+      if (message.type === VOICE_RESPONSE_MESSAGE) {
+        const outcome = voiceTurns.resolve(socket, message)
+        if (!outcome.ok) {
+          return send(socket, {
+            type: "error",
+            error: { code: "VOICE_RESPONSE_REJECTED", message: outcome.reason, turnId: message.turnId ?? null },
+          })
+        }
+        return send(socket, { type: "voice.accepted", turnId: outcome.turnId })
+      }
+      if (message.type === VOICE_CANCEL_MESSAGE) {
+        const outcome = voiceTurns.cancel(socket, message)
+        if (!outcome.ok) {
+          return send(socket, {
+            type: "error",
+            error: { code: "VOICE_CANCEL_REJECTED", message: outcome.reason, turnId: message.turnId ?? null },
+          })
+        }
+        return send(socket, { type: "voice.accepted", turnId: outcome.turnId, canceled: true })
+      }
       if (message.type === "session.ping") return send(socket, { type: "session.pong", at: new Date().toISOString() })
       send(socket, { type: "error", error: { code: "INVALID_REQUEST", message: "Unsupported WebSocket message type" } })
     } catch (error) {
@@ -167,6 +319,9 @@ websocketServer.on("connection", (socket) => {
   })
   socket.on("close", () => {
     clearTimeout(authDeadline)
+    // Settle every turn still waiting on this socket so AgentPhone gets a
+    // fallback immediately instead of waiting out the deadline.
+    voiceTurns.failSocket(socket)
     if (!socket.tenantId) return
     const tenantSockets = socketsByTenant.get(socket.tenantId)
     tenantSockets?.delete(socket)

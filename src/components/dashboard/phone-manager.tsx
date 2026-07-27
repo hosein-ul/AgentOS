@@ -65,7 +65,6 @@ export function PhoneManager({ initialNumbers, initialCalls, purchasePrice, rene
   const [panel, setPanel] = useState<Panel>(null)
   const [country, setCountry] = useState<"US" | "CA">("US")
   const [agentName, setAgentName] = useState("")
-  const [webhookUrl, setWebhookUrl] = useState("")
   const [areaCode, setAreaCode] = useState("")
   const [numberId, setNumberId] = useState(activeNumbers[0]?.id ?? "")
   const [toNumber, setToNumber] = useState("")
@@ -100,7 +99,6 @@ export function PhoneManager({ initialNumbers, initialCalls, purchasePrice, rene
     const serviceId = country === "US" ? "phone.number.us.30d" : "phone.number.ca.30d"
     await runPaid(serviceId, {
       agentName: agentName.trim(),
-      agentWebhookUrl: webhookUrl.trim(),
       areaCode: areaCode.trim() || undefined,
     })
   }
@@ -187,17 +185,19 @@ export function PhoneManager({ initialNumbers, initialCalls, purchasePrice, rene
             <Field label="Agent name">
               <Input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Sales Agent" />
             </Field>
-            <Field label="Live-agent callback URL">
-              <Input value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://agent.example.com/voice" />
-            </Field>
             <Field label="Area code (optional)">
               <Input value={areaCode} onChange={(event) => setAreaCode(event.target.value.replace(/\D/g, "").slice(0, 3))} placeholder="415" inputMode="numeric" />
             </Field>
           </div>
+          <p className="mt-3 text-xs leading-5 text-text-2">
+            Your agent does not need a public webhook. It connects to the AgentOS
+            WebSocket gateway and answers <code>voice.turn</code> messages live.
+            See <a className="underline" href="/docs#live-voice-protocol">the live-voice protocol</a>.
+          </p>
           <div className="mt-4 flex gap-2">
             <Button
               onClick={purchase}
-              disabled={Boolean(pending) || !agentName.trim() || !webhookUrl.startsWith("https://") || Boolean(areaCode && areaCode.length !== 3)}
+              disabled={Boolean(pending) || !agentName.trim() || Boolean(areaCode && areaCode.length !== 3)}
             >
               {pending ? "Confirm in wallet…" : `Pay ${purchasePrice} USDT and provision`}
             </Button>
