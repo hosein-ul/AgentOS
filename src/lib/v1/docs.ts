@@ -94,7 +94,7 @@ The following table is generated from the same catalog used by route payment mid
 | --- | --- | ---: | --- | --- | --- |
 ${catalogRows}
 
-Only available paid business operations with registerOnOkx=true are marketplace ASP services. Discovery, reads, event inbox operations, webhooks, health checks, scheduler routes, and WebSocket upgrades are not paid A2MCP listings.
+Marketplace ASP services are the available catalog records with registerOnOkx=true. Registration is independent of price: paid operations list with their fixed x402 price, and six free customer capabilities (mailbox list, message query, number release, number list, call get, call transcript) list as free A2MCP services. A free listing still requires the bearer token and still executes normally; it simply never returns HTTP 402. Webhooks, health checks, scheduler routes, internal worker routes, discovery endpoints, the event inbox and WebSocket upgrades are infrastructure and are not listed.
 
 ## Common envelopes
 

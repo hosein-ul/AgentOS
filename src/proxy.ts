@@ -12,10 +12,41 @@ function isPrivateAdmin(request: NextRequest) {
   } catch { return false }
 }
 
-function adminRequired() {
+// A browser pops its native credential dialog for any response carrying
+// WWW-Authenticate, including ones it fetched speculatively. Chrome prerenders
+// URLs from history when you type a domain, so an operator who once opened
+// /admin got a password prompt every time they opened the site — over whatever
+// page actually loaded, which looks like the site randomly demanding a password.
+//
+// Only a real, user-initiated top-level navigation may trigger the dialog.
+function isUserNavigation(request: NextRequest) {
+  const headers = request.headers
+  const speculative = headers.get("sec-purpose")?.includes("prefetch")
+    || headers.get("purpose") === "prefetch"
+    || headers.get("x-moz") === "prefetch"
+    || headers.get("next-router-prefetch") === "1"
+  if (speculative) return false
+  const mode = headers.get("sec-fetch-mode")
+  const dest = headers.get("sec-fetch-dest")
+  // Absent Sec-Fetch-* means a non-browser client (curl, scripts): let those
+  // through to the challenge so operator tooling still works.
+  if (!mode && !dest) return true
+  return mode === "navigate" && dest === "document"
+}
+
+function adminChallenge() {
   return new NextResponse("Private admin authentication required", {
     status: 401,
     headers: { "WWW-Authenticate": 'Basic realm="AgentOS Admin", charset="UTF-8"', "Cache-Control": "no-store" },
+  })
+}
+
+// Speculative and subresource requests get a plain 404: no dialog, and the admin
+// surface is not advertised to anything that did not deliberately ask for it.
+function adminHidden() {
+  return new NextResponse("Not found", {
+    status: 404,
+    headers: { "Cache-Control": "no-store" },
   })
 }
 
@@ -38,7 +69,8 @@ export function proxy(request: NextRequest) {
       : NextResponse.json({ error: { code: "API_VERSION_RETIRED", message: "Use /api/v1 and GET /docs" } }, { status: 410 })
   }
   if (path.startsWith("/admin")) {
-    return isPrivateAdmin(request) ? NextResponse.next() : adminRequired()
+    if (isPrivateAdmin(request)) return NextResponse.next()
+    return isUserNavigation(request) ? adminChallenge() : adminHidden()
   }
   return NextResponse.next()
 }

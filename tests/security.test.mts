@@ -433,3 +433,50 @@ test("replay always terminates, even if the durable inbox is unreadable", () => 
   // Events are not lost when replay defers.
   assert.match(gateway, /durable inbox/i)
 })
+
+test("a browser is never shown a credential dialog it did not ask for", async () => {
+  const { proxy } = await import("../src/proxy.ts")
+  const { NextRequest } = await import("next/server")
+  const url = "https://api.example.com/admin"
+  const call = (headers: Record<string, string>) =>
+    proxy(new NextRequest(url, { headers }))
+
+  // Chrome prerenders URLs from history when a domain is typed. That background
+  // request must not carry WWW-Authenticate, or the dialog pops over whatever
+  // page actually loaded.
+  const prerender = call({
+    "sec-purpose": "prefetch;prerender",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+  })
+  assert.equal(prerender.status, 404)
+  assert.equal(prerender.headers.get("www-authenticate"), null)
+
+  // Real speculative traffic as browsers actually send it. A prefetch is a
+  // fetch, not a document navigation, so it carries cors/empty.
+  const speculativeShapes: Array<Record<string, string>> = [
+    { purpose: "prefetch" },
+    { "x-moz": "prefetch" },
+    { rsc: "1", "next-router-prefetch": "1" },
+  ]
+  for (const speculative of speculativeShapes) {
+    const response = call({ ...speculative, "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" })
+    assert.equal(response.status, 404, JSON.stringify(speculative))
+    assert.equal(response.headers.get("www-authenticate"), null, JSON.stringify(speculative))
+  }
+
+  // Subresource fetches (scripts, XHR) must not prompt either.
+  const subresource = call({ "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" })
+  assert.equal(subresource.status, 404)
+  assert.equal(subresource.headers.get("www-authenticate"), null)
+
+  // A deliberate top-level navigation still gets the operator login prompt.
+  const navigation = call({ "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" })
+  assert.equal(navigation.status, 401)
+  assert.match(navigation.headers.get("www-authenticate") ?? "", /^Basic realm=/)
+
+  // Non-browser operator tooling sends no Sec-Fetch-* and must still work.
+  const curl = call({})
+  assert.equal(curl.status, 401)
+  assert.match(curl.headers.get("www-authenticate") ?? "", /^Basic realm=/)
+})

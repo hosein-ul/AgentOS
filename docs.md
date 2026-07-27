@@ -90,7 +90,7 @@ Never submit a second payment after an ambiguous response. Retry the identical r
 
 ## Canonical public service inventory
 
-The machine-authoritative form is `GET /api/v1/services`. Paid marketplace candidates are the available catalog records with `registerOnOkx=true`.
+The machine-authoritative form is `GET /api/v1/services`. Marketplace candidates are the available catalog records with `registerOnOkx=true`, which includes both paid operations and the six free customer capabilities. A free listing never returns HTTP 402 but still requires the bearer token.
 
 ### Email
 

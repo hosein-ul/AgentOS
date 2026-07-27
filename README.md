@@ -1,33 +1,104 @@
 # AgentOS
 
-AgentOS is a multi-tenant Agent Service Provider for the OKX.AI marketplace. Autonomous agents receive real email and phone capabilities through a versioned REST API. Each paid business operation has a fixed AgentOS price and is settled through the OKX Agent Payments Protocol on X Layer.
+AgentOS is a multi-tenant Agent Service Provider for the OKX.AI marketplace. It is
+one ASP identity offering two service models: **A2A execution** for onchain work
+that must be quoted, agreed and monitored, and **A2MCP infrastructure** for
+fixed-price REST operations settled through the OKX Agent Payments Protocol on
+X Layer.
 
-The public surface is `/api/v1`. It is not MCP. Provider failures remain failures; v1 never fabricates email, phone, payment, or domain success.
+The REST surface is `/api/v1`. It is not MCP. Provider failures remain failures;
+v1 never fabricates email, phone, payment, or execution success.
+
+## Services
+
+### 1. Swap & Bridge Execution — A2A
+
+Same-chain swaps, bridges and cross-chain swaps.
+
+- Aggregates routes from **OKX**, **LI.FI** and **Across**, compares them, prepares
+  validated transactions, monitors execution, and supports recovery for stuck jobs.
+- **Non-custodial.** AgentOS never holds funds and never signs for the buyer. The
+  buyer signs and broadcasts every transaction.
+- Marketplace starting fee **0.09 USDT**. The final service fee is calculated and
+  agreed before the job is accepted; it is not a fixed catalog price.
+- Gas, DEX, bridge and provider fees are separate from the service fee.
+- Current catalogue: **80 chains, 19,179 assets, 51,703 provider capabilities.**
+
+Implementation: [hosein-ul/agentic-cross-chain-execution](https://github.com/hosein-ul/agentic-cross-chain-execution)
+(separate repository; access required).
+
+### 2. Agent Email — A2MCP
+
+Real Resend mailboxes, outbound send, inbound receive and authenticated retrieval.
+Fixed catalog prices, x402 per paid operation.
+
+### 3. Agent Phone — A2MCP
+
+Real AgentPhone numbers with live agent-controlled conversations over the AgentOS
+WebSocket, outbound call packages, prepaid inbound allowance, renewal and release.
+
+### 4. Durable events and realtime — A2MCP
+
+A durable event inbox with immediate WebSocket delivery, offline replay, explicit
+acknowledgement and a REST fallback. Free, authenticated.
+
+## Two service models
+
+|  | A2MCP | A2A |
+| --- | --- | --- |
+| Pricing | Fixed catalog price | Quoted and agreed per job |
+| Settlement | x402 on the same request | Agreed before acceptance |
+| Shape | Synchronous REST operation | Long-running job with execution state |
+| Discovery | `/api/v1/services`, `/openapi.json` | Not in the REST catalog |
+| Failure handling | HTTP error, idempotent retry | Monitoring and recovery |
+| Custody | Not applicable | Non-custodial; buyer signs and broadcasts |
+
+**The two implementations use separate runtimes and separate databases.** They
+share the AgentOS ASP identity and product surface, not a process or a schema. A2A
+execution is deliberately absent from `src/lib/v1/service-catalog.ts` and from
+`/openapi.json`; adding it there would misrepresent a negotiated job as a
+fixed-price REST operation.
 
 ## Why AgentOS exists
 
-Agents need durable identities and communication infrastructure, not one-off tool demos. AgentOS gives a wallet-owned agent:
+Agents need durable identities, communication and the ability to act onchain — not
+one-off tool demos. AgentOS gives a wallet-owned agent:
 
+- onchain execution across 80 chains without surrendering custody;
 - real Resend mailboxes and inbound/outbound email;
 - real AgentPhone numbers and live agent-controlled conversations;
 - fixed outbound packages and prepaid inbound allowance;
 - durable lifecycle notifications with WebSocket acceleration;
 - one wallet-bound credential and strict tenant isolation;
-- discoverable contracts suitable for OKX.AI ASP/A2MCP listing.
+- discoverable contracts suitable for OKX.AI ASP listing, as A2MCP or A2A.
 
 ## Current state
 
-| Area | Provider | Repository implementation | Deployed verification |
-| --- | --- | --- | --- |
-| Email | Resend | v1 mailbox/send/query and verified inbound event flow implemented | Requires v1 migrations and provider E2E |
-| Phone | AgentPhone | v1 number/call/renew/release/transcript and durable jobs implemented | Requires v1 migrations, worker, gateway, and funded provider E2E |
-| Domain | none (Cloudflare planned) | unavailable; v1 route is fail-closed 503 | Not implemented |
-| Realtime | Separate Node WebSocket gateway + Supabase | gateway, replay, delivery lease, and socket ack implemented | Not yet deployed |
-| Scheduling | Supabase jobs + separate worker + daily Vercel sweep | implemented in repository | AgentOS is not linked to a connected Vercel project |
+| Area | Model | Provider | Repository implementation | Deployed verification |
+| --- | --- | --- | --- | --- |
+| Swap & Bridge Execution | A2A | OKX, LI.FI, Across | separate repository, separate runtime and database | Tracked in that repository, not here |
+| Email | A2MCP | Resend | v1 mailbox/send/query and verified inbound event flow implemented | Requires v1 migrations and provider E2E |
+| Phone | A2MCP | AgentPhone | v1 number/call/renew/release/transcript and durable jobs implemented | Requires v1 migrations, worker, gateway, and funded provider E2E |
+| Realtime | A2MCP | Node WebSocket gateway + Supabase | gateway, replay, delivery lease, voice turns and socket ack implemented | Not yet deployed |
+| Scheduling | internal | Supabase jobs + worker + daily Vercel sweep | implemented in repository | Not verified in production |
+| Domain | none | Cloudflare planned | unavailable; v1 route is fail-closed 503 | Not implemented |
 
-The connected Supabase `agentmail` project now has all five local v1 migrations applied. All public tables have RLS enabled, `anon/authenticated` have no direct public-table grants, and the two security-definer claim functions are executable only by `service_role`. The v1 tables are empty until real provisioning begins. This repository must not be described as a live production service until the app, gateway, worker, secrets, webhooks, and paid E2E tests are complete.
+The connected Supabase `agentmail` project has the seven historical migrations
+applied; the repository additionally carries forward-only migrations that are not
+yet applied. All public tables have RLS enabled, `anon/authenticated` have no
+direct public-table grants, and the security-definer claim functions are
+executable only by `service_role`.
+
+This repository must not be described as a live production service. The A2MCP side
+is code-complete and tested against mocks; it has not been verified end to end with
+real payments, real provider traffic, or a deployed gateway and worker. Readiness
+for the A2A service is tracked in its own repository and is not asserted here.
 
 ## Architecture
+
+The two service models run as separate systems that share one ASP identity.
+
+### A2MCP — fixed-price REST operations
 
 ```mermaid
 flowchart LR
@@ -40,11 +111,34 @@ flowchart LR
   V --> R["Resend"]
   R -->|"verified webhook"| V
   V --> P["AgentPhone"]
-  P -->|"signed live webhook"| V
-  V -->|"signed callback"| A
+  P -->|"signed provider webhook"| V
+  V -->|"voice.turn over WSS"| G
 ```
 
-Postgres is the source of truth for tenants, token hashes, payment/idempotency ledgers, provider resources, events, entitlements, and jobs. WebSocket delivery never replaces durable persistence.
+Postgres is the source of truth for tenants, token hashes, payment/idempotency
+ledgers, provider resources, events, entitlements, and jobs. WebSocket delivery
+never replaces durable persistence.
+
+### A2A — negotiated execution jobs
+
+```mermaid
+flowchart LR
+  B["Buyer agent"] -->|"job request"| X["AgentOS A2A execution service"]
+  X -->|"route comparison"| O["OKX"]
+  X --> L["LI.FI"]
+  X --> AC["Across"]
+  X -->|"quote and agreed fee"| B
+  X -->|"validated unsigned transaction"| B
+  B -->|"signs and broadcasts"| N["Chain"]
+  X -->|"monitors, reports state, supports recovery"| B
+```
+
+The buyer keeps custody throughout. AgentOS prepares and validates transactions
+and observes them; it does not hold funds, does not sign, and does not broadcast.
+This flow lives in
+[hosein-ul/agentic-cross-chain-execution](https://github.com/hosein-ul/agentic-cross-chain-execution)
+with its own runtime and database, and shares no process or schema with the REST
+API in this repository.
 
 ## Repository structure
 
@@ -117,7 +211,7 @@ Public prices never change automatically with provider pricing.
 | Add 10 inbound minutes | 3.00 USDT |
 | Reads, event inbox, release | free authenticated |
 
-See `/api/v1/services` for exact IDs and paths. Only available paid records with `registerOnOkx=true` should be listed on OKX.AI. Never list webhooks, worker routes, health checks, WebSocket upgrades, reads, or disabled Domain routes as paid services.
+See `/api/v1/services` for exact IDs and paths. Available records with `registerOnOkx=true` should be listed on OKX.AI — paid operations at their fixed x402 price, and the six free customer capabilities as free listings. Never list webhooks, worker routes, health checks, WebSocket upgrades, discovery endpoints, the event inbox, or the disabled Domain route.
 
 ## Email architecture
 

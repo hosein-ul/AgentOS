@@ -226,3 +226,111 @@ test("provider identifiers are never returned to customers", () => {
   const publicShape = phone.slice(phone.indexOf("function publicNumber"), phone.indexOf("async function ownedNumber"))
   assert.doesNotMatch(publicShape, /provider_number_id|provider_agent_id|provider_sub_account_id/)
 })
+
+// The six free customer capabilities that must be listable as free A2MCP
+// services on OKX.AI. Being free is a billing fact, not a reason to hide them.
+const FREE_REGISTERED = [
+  "email.mailbox.list",
+  "email.message.query",
+  "phone.number.release",
+  "phone.number.list",
+  "phone.call.get",
+  "phone.call.transcript",
+] as const
+
+test("the six free customer capabilities are OKX-registration eligible", () => {
+  for (const id of FREE_REGISTERED) {
+    const service = SERVICE_CATALOG.find((entry) => entry.id === id)
+    assert.ok(service, `${id} is missing from the catalog`)
+    assert.equal(service.available, true, `${id} available`)
+    assert.equal(service.registerOnOkx, true, `${id} registerOnOkx`)
+    assert.equal(service.paid, false, `${id} paid`)
+    assert.equal(service.amount, "0.00", `${id} amount`)
+    assert.equal(service.currency, "USDT", `${id} currency`)
+    assert.equal(service.x402Price, null, `${id} x402Price`)
+    assert.equal(service.authenticated, true, `${id} authenticated`)
+    assert.equal(service.startHere, false, `${id} startHere`)
+  }
+})
+
+test("marketplace registration is decoupled from pricing", () => {
+  const registeredFree = SERVICE_CATALOG.filter((s) => s.registerOnOkx && !s.paid)
+  assert.deepEqual(
+    registeredFree.map((s) => s.id).sort(),
+    [...FREE_REGISTERED].sort(),
+    "exactly these free services are registered",
+  )
+  // The helper must not force registration off for free entries.
+  const catalog = read("src/lib/v1/service-catalog.ts")
+  assert.doesNotMatch(catalog, /\n\s*registerOnOkx: false,\n\s*idempotency: entry\.method/,
+    "free() must not hardcode registerOnOkx: false")
+  assert.match(catalog, /registerOnOkx: options\.registerOnOkx \?\? false/)
+})
+
+test("a registered free service never carries an x402 price", () => {
+  for (const service of SERVICE_CATALOG.filter((s) => s.registerOnOkx && !s.paid)) {
+    assert.equal(service.x402Price, null, `${service.id} must not advertise a price`)
+    assert.equal(service.amount, "0.00", service.id)
+    assert.equal(service.idempotency, service.method === "POST" ? "recommended" : "not-applicable", service.id)
+  }
+})
+
+test("free registered routes execute normally and never reach the payment layer", () => {
+  const routeFor = (endpoint: string) =>
+    `src/app${endpoint.replace(/\{([^}]+)\}/g, "[$1]")}/route.ts`
+  for (const id of FREE_REGISTERED) {
+    const service = SERVICE_CATALOG.find((entry) => entry.id === id)!
+    const source = read(routeFor(service.endpoint))
+    assert.doesNotMatch(source, /v1Paid/, `${id} must not use the paid wrapper`)
+    assert.doesNotMatch(source, /prepareV1Payment|settleV1Payment/, `${id} must not touch payment`)
+    assert.doesNotMatch(source, /402/, `${id} must never return a payment challenge`)
+    // It is still a real, authenticated operation.
+    assert.match(source, /v1Read|v1Write|v1Action/, `${id} must execute normally`)
+  }
+})
+
+test("discovery and event plumbing stay unregistered", () => {
+  for (const id of ["discovery.api", "discovery.services", "events.list", "events.get", "events.ack", "events.ack-all", "events.realtime-token"]) {
+    const service = SERVICE_CATALOG.find((entry) => entry.id === id)
+    assert.ok(service, id)
+    assert.equal(service.registerOnOkx, false, `${id} is infrastructure, not a marketplace listing`)
+  }
+})
+
+test("the A2A execution service is never listed as a REST A2MCP operation", () => {
+  // Swap & Bridge Execution is a negotiated OKX A2A job with its own runtime and
+  // database. Putting it in the fixed-price catalog or OpenAPI would advertise an
+  // agreed fee as a fixed x402 price.
+  for (const service of SERVICE_CATALOG) {
+    assert.doesNotMatch(service.id, /swap|bridge|execution/i, `${service.id} must not be an A2A listing`)
+    assert.doesNotMatch(service.endpoint, /swap|bridge|execution/i, service.endpoint)
+  }
+  for (const path of ["src/lib/v1/service-catalog.ts", "src/app/openapi.json/route.ts"]) {
+    const source = read(path)
+    assert.doesNotMatch(source, /LI\.FI|Across/i, `${path} must not reference A2A route providers`)
+    assert.doesNotMatch(source, /0\.09/, `${path} must not carry the A2A starting fee`)
+  }
+  // No catalog entry may claim a negotiated price.
+  for (const service of SERVICE_CATALOG) {
+    if (!service.paid) continue
+    assert.match(service.amount, /^\d+\.\d{2}$/, `${service.id} must be a fixed decimal price`)
+  }
+})
+
+test("the landing page presents A2A first and never mislabels non-fixed prices", () => {
+  const page = read("src/app/page.tsx")
+  // A2A must be defined and rendered before the A2MCP service grid.
+  assert.ok(page.indexOf("const execution") < page.indexOf("const infrastructure"),
+    "A2A must be the primary service")
+  for (const claim of ["Swap & Bridge Execution", "OKX", "LI.FI", "Across", "80", "19,179", "51,703"]) {
+    assert.ok(page.includes(claim), `landing page must state ${claim}`)
+  }
+  assert.match(page, /[Nn]on-custodial/)
+  assert.match(page, /signs and broadcasts/)
+  // The old bug: a blanket " USDT" suffix turned FREE into "FREE USDT".
+  assert.doesNotMatch(page, /\{service\.price\}\s*USDT/, "prices must render verbatim, not be suffixed")
+  assert.match(page, /FROM 0\.09/)
+  assert.doesNotMatch(page, /FROM 0\.09 USDT|FREE USDT/, "a starting fee is not a fixed USDT price")
+  // Both models must be explained.
+  assert.ok(page.includes("A2MCP") && page.includes("A2A"))
+})
