@@ -30,6 +30,11 @@ const MAX_BROKER_BODY_BYTES = 64 * 1024
 const SIGNATURE_TOLERANCE_SECONDS = 120
 // Replay must terminate even if the database is slow or unreachable.
 const REPLAY_TIMEOUT_MS = 10_000
+// The broker endpoint must be internet-reachable so Vercel can call it, so it is
+// rate limited in addition to requiring a valid HMAC. A real AgentPhone call
+// produces a handful of turns per second at most; this only stops abuse.
+const BROKER_RATE_LIMIT = 60
+const BROKER_RATE_WINDOW_MS = 10_000
 const db = createClient(supabaseUrl, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
@@ -142,6 +147,19 @@ function json(response, status, body) {
   response.end(JSON.stringify(body))
 }
 
+const brokerHits = []
+
+// Fixed-window counter over a bounded array. Unauthenticated floods are dropped
+// before the HMAC is computed, so signature verification cannot be used as a
+// CPU amplification vector.
+function brokerRateLimited() {
+  const now = Date.now()
+  while (brokerHits.length && now - brokerHits[0] > BROKER_RATE_WINDOW_MS) brokerHits.shift()
+  if (brokerHits.length >= BROKER_RATE_LIMIT) return true
+  brokerHits.push(now)
+  return false
+}
+
 function verifyBrokerSignature(rawBody, headers) {
   const signature = headers["x-agentos-signature"]
   const timestamp = headers["x-agentos-timestamp"]
@@ -186,6 +204,9 @@ function liveSocketForTenant(tenantId) {
 // gateway to run one live turn against the tenant's connected Agent socket.
 // Authenticated with a shared HMAC; never exposed to customers.
 async function handleVoiceTurn(request, response) {
+  if (brokerRateLimited()) {
+    return json(response, 429, { status: "unavailable", reason: "rate_limited" })
+  }
   let raw
   try {
     raw = await readBoundedBody(request)

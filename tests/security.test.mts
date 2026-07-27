@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHmac, randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import test from "node:test"
 
@@ -320,9 +320,62 @@ test("private and internal surfaces are not public marketplace routes", () => {
   assert.match(proxy, /isPrivateAdmin/)
   assert.match(proxy, /\/admin/)
   assert.match(proxy, /API_VERSION_RETIRED/, "retired legacy routes stay closed")
-  // Legacy /api/asp/* must remain gone rather than half-alive.
+  // The legacy surface is deleted, and the proxy still answers 410 rather than a
+  // bare 404 so an old client gets a meaningful response.
   assert.match(proxy, /api\/asp/)
   assert.match(proxy, /410/)
+})
+
+test("the legacy API surface is deleted, not merely fail-closed", () => {
+  const legacy = [
+    "src/app/api/asp",
+    "src/app/api/webhooks",
+    "src/app/api/agents",
+    "src/app/api/analytics",
+    "src/app/api/api-keys",
+    "src/app/api/emails",
+    "src/app/api/templates",
+  ]
+  for (const path of legacy) {
+    assert.equal(existsSync(join(root, path)), false, `${path} must no longer exist`)
+  }
+  // Libraries that existed only to serve those routes are gone too.
+  for (const path of [
+    "src/lib/asp-route.ts",
+    "src/lib/asp-hints.ts",
+    "src/lib/asp-manifest.ts",
+    "src/lib/auth.ts",
+    "src/lib/email-service.ts",
+    "src/lib/phone-service.ts",
+    "src/lib/domain-service.ts",
+    "src/lib/providers/domain.ts",
+    "src/lib/providers/phone.ts",
+    "src/lib/x402.ts",
+  ]) {
+    assert.equal(existsSync(join(root, path)), false, `${path} is orphaned and must be removed`)
+  }
+  // Only v1 and the private dashboard remain under /api.
+  const apiDirs = readdirSync(join(root, "src/app/api")).sort()
+  assert.deepEqual(apiDirs, ["dashboard", "v1"])
+})
+
+test("no dead legacy Supabase client shim remains", () => {
+  const supabase = read("src/lib/supabase.ts")
+  assert.doesNotMatch(supabase, /new Proxy/, "the legacy client proxy had no consumers")
+  assert.match(supabase, /requireServerSupabase/)
+})
+
+test("the internet-reachable broker endpoint is rate limited as well as signed", () => {
+  const gateway = read("services/realtime-gateway/server.mjs")
+  assert.match(gateway, /BROKER_RATE_LIMIT/)
+  assert.match(gateway, /429/)
+  // The limit is applied before the HMAC so signature checking cannot be used
+  // as a CPU amplification vector.
+  const handler = gateway.slice(gateway.indexOf("async function handleVoiceTurn"))
+  assert.ok(
+    handler.indexOf("brokerRateLimited()") < handler.indexOf("verifyBrokerSignature"),
+    "rate limiting must run before signature verification",
+  )
 })
 
 test("request bodies are parsed defensively", () => {

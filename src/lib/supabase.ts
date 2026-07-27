@@ -36,14 +36,3 @@ export function requireServerSupabase() {
   }
   return serverClient
 }
-
-// Compatibility for retired legacy routes. The proxy is intentionally lazy so
-// importing one of those route modules cannot initialize a privileged client
-// during `next build`. New production code must call requireServerSupabase().
-export const supabase = new Proxy({} as SupabaseClient, {
-  get(_target, property) {
-    const client = requireServerSupabase()
-    const value = Reflect.get(client, property)
-    return typeof value === "function" ? value.bind(client) : value
-  },
-})
