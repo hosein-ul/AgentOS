@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireServerSupabase } from "@/lib/supabase"
 import { getReceivedEmail, verifyWebhook } from "@/lib/resend"
-import { ApiError, apiError } from "@/lib/v1/http"
+import { ApiError, apiError, readBoundedText } from "@/lib/v1/http"
 import { createDurableEvent } from "@/lib/v1/events"
 
 export const runtime = "nodejs"
@@ -9,7 +9,8 @@ export async function POST(request: NextRequest) {
   try {
     const secret = process.env.RESEND_WEBHOOK_SECRET
     if (!secret) throw new ApiError("provider_configuration_error", "RESEND_WEBHOOK_SECRET is not configured", 503)
-    const raw = await request.text()
+    // Provider webhooks are bounded before the signature is computed over them.
+    const raw = await readBoundedText(request)
     const event = verifyWebhook(raw, { id: request.headers.get("svix-id"), timestamp: request.headers.get("svix-timestamp"), signature: request.headers.get("svix-signature") }, secret)
     const eventId = request.headers.get("svix-id")
     if (!eventId) throw new ApiError("forbidden", "Missing Resend event identifier", 401)

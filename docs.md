@@ -391,17 +391,53 @@ These must not be registered as OKX.AI paid services.
 
 ## Database and migrations
 
-Apply in timestamp order:
+Apply in timestamp order. Repository filenames now match the versions production
+actually recorded, so `supabase db push` against an empty project reproduces the
+production schema exactly:
 
-1. `20260723_agentos_v1.sql`
-2. `20260724064040_agentphone_phone_lifecycle.sql`
-3. `20260724150000_unified_durable_events.sql`
-4. `20260724160000_foreign_key_indexes.sql`
-5. `20260724170000_gateway_only_event_access.sql`
+1. `20260715060100_init_agentmail.sql`
+2. `20260724105651_agentos_v1.sql`
+3. `20260724105706_agentphone_phone_lifecycle.sql`
+4. `20260724105725_unified_durable_events.sql`
+5. `20260724105855_foreign_key_indexes.sql`
+6. `20260724110457_gateway_only_event_access.sql`
+7. `20260724222712_dashboard_wallet_sessions.sql`
+8. `20260727120000_live_voice_websocket.sql`
+9. `20260727130000_bootstrap_token_once.sql`
 
-The last migration adds event statuses, expiry, delivery leases/attempts, tenant/agent/type/resource indexes, the atomic event claim function, mailbox-scoped Resend uniqueness, and explicit hardening of named legacy tables. It does not delete data.
+Migrations 1–7 were already applied in production. Migrations 8 and 9 are new and
+forward-only. No already-applied migration was edited.
 
-The connected `agentmail` database now contains the legacy migration plus all five v1 migrations. All 21 public tables have RLS enabled; `anon/authenticated` have no direct public-table grants; event/job claim functions are service-role-only. Security advisors have no ERROR/WARN findings. Remaining INFO notices are expected deny-all RLS tables and unused indexes on empty v1 tables.
+`20260724105725_unified_durable_events.sql` adds event statuses, expiry, delivery
+leases/attempts, tenant/agent/type/resource indexes, the atomic event claim
+function, mailbox-scoped Resend uniqueness, and hardening of named legacy tables.
+It deletes no data.
+
+### Retained legacy schema
+
+`20260715060100_init_agentmail.sql` recreates the original AgentMail tables
+(`User`, `Agent`, `Email`, `Attachment`, `ApiKey`, `EmailTemplate`). It is retained
+deliberately, not revived: no v1 route reads or writes these tables. It must exist
+because `20260724105855_foreign_key_indexes.sql` indexes `Attachment` and
+`EmailTemplate`, so without it a fresh database cannot apply the migration set.
+Dropping the tables instead would make an already-applied production migration
+irreproducible.
+
+### Retained legacy columns
+
+`v1_phone_numbers.agent_webhook_url`, `v1_phone_numbers.agent_webhook_secret_encrypted`
+and `v1_calls.agent_webhook_url` belonged to the retired customer-webhook contract.
+`20260727120000_live_voice_websocket.sql` makes them nullable and stops all reads
+and writes, but keeps the columns so that rows provisioned before the change retain
+their history and so earlier migrations stay reproducible. They are never returned
+in any customer-facing response.
+
+`v1_users.bootstrap_token_issued_at` is new, not legacy. It records the one-time
+bootstrap token claim and is backfilled for wallets that already hold a token.
+
+The connected `agentmail` database contains the legacy migration plus the v1
+migrations. All public tables have RLS enabled; `anon`/`authenticated` have no
+direct public-table grants; event and job claim functions are service-role-only.
 
 ## Environment variables
 

@@ -7,7 +7,7 @@ import {
   verifyAgentPhoneWebhook,
 } from "@/lib/v1/agentphone"
 import { createDurableEvent } from "@/lib/v1/events"
-import { apiError, ApiError } from "@/lib/v1/http"
+import { apiError, ApiError, readBoundedText } from "@/lib/v1/http"
 import { enqueueCallEnd } from "@/lib/v1/jobs"
 import { decryptPhoneSecret } from "@/lib/v1/secrets"
 import { requestVoiceTurn, voiceFallback } from "@/lib/v1/voice"
@@ -154,7 +154,8 @@ async function markProcessed(webhookId: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const raw = await request.text()
+    // Provider webhooks are bounded before the signature is computed over them.
+    const raw = await readBoundedText(request)
     const parsed = JSON.parse(raw) as AgentPhoneWebhookEvent
     const event = stripProviderMediaFields(parsed) as AgentPhoneWebhookEvent
     const phone = await findPhone(event)

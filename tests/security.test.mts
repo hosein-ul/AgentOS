@@ -331,3 +331,39 @@ test("request bodies are parsed defensively", () => {
   assert.match(http, /Array\.isArray\(value\)/, "a JSON array is not a valid body")
   assert.match(http, /max = 10_000/, "string inputs are length-bounded")
 })
+
+test("request bodies are size-bounded independently of the hosting platform", async () => {
+  const { readJson, readBoundedText, MAX_REQUEST_BODY_BYTES } = await import("../src/lib/v1/http.ts")
+
+  const ok = await readJson(new Request("https://example.com", {
+    method: "POST",
+    body: JSON.stringify({ hello: "world" }),
+  }))
+  assert.deepEqual(ok, { hello: "world" })
+
+  // A lying Content-Length must not get past the check.
+  const oversized = "x".repeat(MAX_REQUEST_BODY_BYTES + 10)
+  await assert.rejects(
+    () => readBoundedText(new Request("https://example.com", { method: "POST", body: oversized })),
+    /too large/,
+  )
+  await assert.rejects(
+    () => readBoundedText(new Request("https://example.com", {
+      method: "POST",
+      body: "{}",
+      headers: { "content-length": String(MAX_REQUEST_BODY_BYTES + 1) },
+    })),
+    /too large/,
+  )
+})
+
+test("provider webhook bodies are bounded before the signature is computed", () => {
+  for (const path of [
+    "src/app/api/v1/webhooks/agentphone/route.ts",
+    "src/app/api/v1/webhooks/resend/route.ts",
+  ]) {
+    const route = read(path)
+    assert.match(route, /readBoundedText\(request\)/, `${path} must bound the raw body`)
+    assert.doesNotMatch(route, /await request\.text\(\)/, `${path} must not read an unbounded body`)
+  }
+})
