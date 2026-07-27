@@ -161,6 +161,30 @@ test("a contract migration sorts after the expand migration it depends on", () =
   }
 })
 
+test("every migration filename cited in documentation actually exists", () => {
+  // Renaming a migration used to leave stale filenames scattered through the
+  // docs, which sends an operator looking for a file that is not there.
+  const cited = new Map<string, Set<string>>()
+  for (const doc of ["docs.md", "README.md"]) {
+    const source = readFileSync(join(process.cwd(), doc), "utf8")
+    for (const match of source.matchAll(/`?(\d{8,14}_[a-z0-9_]+\.sql)`?/g)) {
+      if (!cited.has(match[1])) cited.set(match[1], new Set())
+      cited.get(match[1])!.add(doc)
+    }
+  }
+  assert.ok(cited.size > 0, "expected the docs to name some migrations")
+
+  for (const [name, docs] of cited) {
+    assert.ok(files.includes(name), `${[...docs].join(", ")} cites ${name}, which does not exist`)
+  }
+
+  // And every migration should be documented, so none is applied unexplained.
+  const documented = new Set(cited.keys())
+  for (const name of files) {
+    assert.ok(documented.has(name), `${name} is not documented in docs.md or README.md`)
+  }
+})
+
 test("privileged functions stay service-role only", () => {
   for (const name of files) {
     const source = sql.get(name)!

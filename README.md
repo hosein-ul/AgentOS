@@ -213,11 +213,19 @@ Pro is needed only if Vercel itself must schedule more than daily. Even on Pro, 
 
 Local migrations:
 
-1. `20260724105651_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
-2. `20260724064040_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
-3. `20260724150000_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
-4. `20260724160000_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
-5. `20260724170000_gateway_only_event_access.sql` — removes direct browser access after moving delivery to the authenticated AgentOS gateway.
+Filenames match the versions production actually recorded, so a fresh database
+reproduces the production schema. See `docs.md` for the full migration notes.
+
+1. `20260715060100_init_agentmail.sql` — retained legacy AgentMail tables. Unused by v1, but migration 5 indexes two of them.
+2. `20260724105651_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
+3. `20260724105706_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
+4. `20260724105725_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
+5. `20260724105855_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
+6. `20260724110457_gateway_only_event_access.sql` — removes direct browser access after moving delivery to the authenticated AgentOS gateway.
+7. `20260724222712_dashboard_wallet_sessions.sql` — wallet sign-in nonces for the owner dashboard.
+8. `20260727203201_live_voice_websocket.sql` — retires the customer webhook columns; EXPAND phase adding the seven-argument inbound-call reservation.
+9. `20260727203347_bootstrap_token_once.sql` — one-time bootstrap access-token claim, with backfill.
+10. `20260727203500_drop_legacy_reserve_inbound_call.sql` — CONTRACT phase. **Do not apply until the live-voice build is deployed**; the running application still calls the eight-argument overload.
 
 The connected `agentmail` Supabase project was upgraded from its legacy-only schema during this implementation. RLS is now enabled on all 21 public tables and `anon/authenticated` have no direct public-table grants. Security advisors report no ERROR/WARN findings; the remaining INFO notices are expected deny-all tables with RLS and no client policies. Performance advisors report only unused-index notices because the v1 tables have no workload yet.
 
