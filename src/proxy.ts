@@ -19,8 +19,8 @@ function adminRequired() {
   })
 }
 
-// v1 is the public marketplace surface. The retained legacy dashboard and its
-// supporting routes are private owner tooling, protected at the edge.
+// v1 is the marketplace surface. `/dashboard` is the tenant portal and does
+// its authorization in server components/route handlers; `/admin` is owner-only.
 export function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname
   if (path === "/api/asp" || path.startsWith("/api/asp/")) {
@@ -31,15 +31,16 @@ export function proxy(request: NextRequest) {
       },
     }, { status: 410 })
   }
+  if (path.startsWith("/api/dashboard/")) return NextResponse.next()
   if (path.startsWith("/api/") && path !== "/api/v1" && !path.startsWith("/api/v1/")) {
     return isPrivateAdmin(request)
       ? NextResponse.next()
       : NextResponse.json({ error: { code: "API_VERSION_RETIRED", message: "Use /api/v1 and GET /docs" } }, { status: 410 })
   }
-  if (path.startsWith("/dashboard")) {
+  if (path.startsWith("/admin")) {
     return isPrivateAdmin(request) ? NextResponse.next() : adminRequired()
   }
   return NextResponse.next()
 }
 
-export const config = { matcher: ["/api/:path*", "/dashboard/:path*"] }
+export const config = { matcher: ["/api/:path*", "/admin/:path*"] }

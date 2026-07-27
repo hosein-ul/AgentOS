@@ -64,7 +64,7 @@ test("unavailable domain registration is never an OKX paid listing", () => {
 
 test("unified event migration includes tenant-safe delivery indexes and states", () => {
   const migration = readFileSync(
-    join(process.cwd(), "supabase/migrations/20260724150000_unified_durable_events.sql"),
+    join(process.cwd(), "supabase/migrations/20260724105725_unified_durable_events.sql"),
     "utf8",
   )
   assert.match(migration, /tenant_id, status, created_at, id/)

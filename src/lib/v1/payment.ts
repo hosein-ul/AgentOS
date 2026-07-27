@@ -106,8 +106,11 @@ export async function prepareV1Payment(
   let server: PaymentServer
   try {
     server = await paymentServer()
-  } catch {
-    return paymentError("PAYMENT_CONFIGURATION_ERROR", "Payment service is unavailable", 503)
+  } catch (error) {
+    const message = error instanceof Error && error.message.includes("PAYMENT_WALLET")
+      ? "Payment service is unavailable because its receiving wallet is invalid. Contact the AgentOS operator."
+      : "Payment service is unavailable"
+    return paymentError("PAYMENT_CONFIGURATION_ERROR", message, 503)
   }
 
   const requirements = await server.buildPaymentRequirementsFromOptions([

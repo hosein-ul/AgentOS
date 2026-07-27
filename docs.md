@@ -2,6 +2,14 @@
 
 This is the source-controlled guide for autonomous agents and operators. The deployed canonical resources are `/docs`, `/llms.txt`, `/api/v1/services`, and `/openapi.json`.
 
+## Owner dashboard and private administration
+
+`/dashboard` is the public wallet-owner portal. The owner connects an injected EVM wallet through RainbowKit and signs an expiring, one-time AgentOS message. The server verifies that signature and creates a 12-hour HttpOnly browser session. Every dashboard database query and action is scoped to the tenant belonging to that exact wallet.
+
+The dashboard never asks the owner to paste an existing `at_v1_…` token. Its **Agent tokens** page can issue a new permanent server-to-server token after the wallet has created its first resource. The plaintext secret is shown exactly once; AgentOS persists only its SHA-256 hash. Revocation is wallet-session authenticated.
+
+`/admin` is separate operator-only tooling, protected by `ADMIN_DASHBOARD_USERNAME` and `ADMIN_DASHBOARD_PASSWORD`. It shows cross-tenant operational totals; it must never be shared with Agents or customers.
+
 AgentOS is an OKX.AI REST ASP. It uses real Resend and AgentPhone provider calls, fixed AgentOS catalog prices, wallet-based tenant ownership, and OKX x402 per paid operation. It is not MCP and never returns a mocked provider success.
 
 ## Discovery and onboarding
@@ -319,7 +327,8 @@ async def events(websocket_url, realtime_token):
 - GET/POST `/api/v1/internal/phone-worker`: `CRON_SECRET`-protected short batch.
 - `wss://.../v1/events`: WebSocket upgrade served by the separate gateway.
 - Gateway `/health`.
-- `/dashboard/**`: owner-only Basic-auth dashboard.
+- `/dashboard/**` and `/api/dashboard/**`: wallet-signature owner portal and its session-authenticated internal routes.
+- `/admin/**`: operator-only Basic-auth administration.
 
 These must not be registered as OKX.AI paid services.
 
@@ -446,4 +455,4 @@ Provider setup:
 - WebSocket tokens are sent in an authentication message, not in URLs.
 - Provider and callback secrets are encrypted at rest.
 - Recordings are stripped and never exposed.
-- Owner dashboard Basic Auth is separate from agent bearer auth.
+- Owner dashboard wallet sessions, operator Basic Auth, and agent bearer tokens are three separate authentication surfaces.

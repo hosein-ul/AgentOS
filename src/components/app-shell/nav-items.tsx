@@ -4,9 +4,9 @@ import {
   PhoneCall,
   Globe,
   FileText,
-  BarChart3,
+  Bell,
   KeyRound,
-  Settings2,
+  Settings,
   type LucideIcon,
 } from "lucide-react"
 
@@ -34,20 +34,15 @@ export const NAV_SECTIONS: NavSection[] = [
       { href: "/dashboard/mailboxes", label: "Mailboxes", icon: Mail },
       { href: "/dashboard/numbers", label: "Numbers & Calls", icon: PhoneCall },
       { href: "/dashboard/domains", label: "Domains & DNS", icon: Globe },
-      { href: "/dashboard/templates", label: "Templates", icon: FileText },
+      { href: "/dashboard/events", label: "Events", icon: Bell },
     ],
   },
   {
-    title: "Insights",
+    title: "Developer",
     items: [
-      { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
-    ],
-  },
-  {
-    title: "Manage",
-    items: [
-      { href: "/dashboard/api-keys", label: "API Keys", icon: KeyRound },
-      { href: "/dashboard/admin", label: "Admin", icon: Settings2 },
+      { href: "/dashboard/api-keys", label: "Agent tokens", icon: KeyRound },
+      { href: "/dashboard/guide", label: "API guide", icon: FileText },
+      { href: "/dashboard/settings", label: "Account & services", icon: Settings },
     ],
   },
 ]
