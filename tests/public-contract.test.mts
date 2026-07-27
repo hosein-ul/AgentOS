@@ -226,3 +226,73 @@ test("provider identifiers are never returned to customers", () => {
   const publicShape = phone.slice(phone.indexOf("function publicNumber"), phone.indexOf("async function ownedNumber"))
   assert.doesNotMatch(publicShape, /provider_number_id|provider_agent_id|provider_sub_account_id/)
 })
+
+// The six free customer capabilities that must be listable as free A2MCP
+// services on OKX.AI. Being free is a billing fact, not a reason to hide them.
+const FREE_REGISTERED = [
+  "email.mailbox.list",
+  "email.message.query",
+  "phone.number.release",
+  "phone.number.list",
+  "phone.call.get",
+  "phone.call.transcript",
+] as const
+
+test("the six free customer capabilities are OKX-registration eligible", () => {
+  for (const id of FREE_REGISTERED) {
+    const service = SERVICE_CATALOG.find((entry) => entry.id === id)
+    assert.ok(service, `${id} is missing from the catalog`)
+    assert.equal(service.available, true, `${id} available`)
+    assert.equal(service.registerOnOkx, true, `${id} registerOnOkx`)
+    assert.equal(service.paid, false, `${id} paid`)
+    assert.equal(service.amount, "0.00", `${id} amount`)
+    assert.equal(service.currency, "USDT", `${id} currency`)
+    assert.equal(service.x402Price, null, `${id} x402Price`)
+    assert.equal(service.authenticated, true, `${id} authenticated`)
+    assert.equal(service.startHere, false, `${id} startHere`)
+  }
+})
+
+test("marketplace registration is decoupled from pricing", () => {
+  const registeredFree = SERVICE_CATALOG.filter((s) => s.registerOnOkx && !s.paid)
+  assert.deepEqual(
+    registeredFree.map((s) => s.id).sort(),
+    [...FREE_REGISTERED].sort(),
+    "exactly these free services are registered",
+  )
+  // The helper must not force registration off for free entries.
+  const catalog = read("src/lib/v1/service-catalog.ts")
+  assert.doesNotMatch(catalog, /\n\s*registerOnOkx: false,\n\s*idempotency: entry\.method/,
+    "free() must not hardcode registerOnOkx: false")
+  assert.match(catalog, /registerOnOkx: options\.registerOnOkx \?\? false/)
+})
+
+test("a registered free service never carries an x402 price", () => {
+  for (const service of SERVICE_CATALOG.filter((s) => s.registerOnOkx && !s.paid)) {
+    assert.equal(service.x402Price, null, `${service.id} must not advertise a price`)
+    assert.equal(service.amount, "0.00", service.id)
+    assert.equal(service.idempotency, service.method === "POST" ? "recommended" : "not-applicable", service.id)
+  }
+})
+
+test("free registered routes execute normally and never reach the payment layer", () => {
+  const routeFor = (endpoint: string) =>
+    `src/app${endpoint.replace(/\{([^}]+)\}/g, "[$1]")}/route.ts`
+  for (const id of FREE_REGISTERED) {
+    const service = SERVICE_CATALOG.find((entry) => entry.id === id)!
+    const source = read(routeFor(service.endpoint))
+    assert.doesNotMatch(source, /v1Paid/, `${id} must not use the paid wrapper`)
+    assert.doesNotMatch(source, /prepareV1Payment|settleV1Payment/, `${id} must not touch payment`)
+    assert.doesNotMatch(source, /402/, `${id} must never return a payment challenge`)
+    // It is still a real, authenticated operation.
+    assert.match(source, /v1Read|v1Write|v1Action/, `${id} must execute normally`)
+  }
+})
+
+test("discovery and event plumbing stay unregistered", () => {
+  for (const id of ["discovery.api", "discovery.services", "events.list", "events.get", "events.ack", "events.ack-all", "events.realtime-token"]) {
+    const service = SERVICE_CATALOG.find((entry) => entry.id === id)
+    assert.ok(service, id)
+    assert.equal(service.registerOnOkx, false, `${id} is infrastructure, not a marketplace listing`)
+  }
+})

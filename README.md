@@ -117,7 +117,7 @@ Public prices never change automatically with provider pricing.
 | Add 10 inbound minutes | 3.00 USDT |
 | Reads, event inbox, release | free authenticated |
 
-See `/api/v1/services` for exact IDs and paths. Only available paid records with `registerOnOkx=true` should be listed on OKX.AI. Never list webhooks, worker routes, health checks, WebSocket upgrades, reads, or disabled Domain routes as paid services.
+See `/api/v1/services` for exact IDs and paths. Available records with `registerOnOkx=true` should be listed on OKX.AI — paid operations at their fixed x402 price, and the six free customer capabilities as free listings. Never list webhooks, worker routes, health checks, WebSocket upgrades, discovery endpoints, the event inbox, or the disabled Domain route.
 
 ## Email architecture
 

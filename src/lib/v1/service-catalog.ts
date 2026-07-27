@@ -37,15 +37,25 @@ function paid(
   }
 }
 
+/**
+ * Marketplace registration is independent of price.
+ *
+ * Being free says how a service is billed, not whether it is a real customer
+ * capability worth listing. A free service can be registered on OKX.AI as a free
+ * A2MCP listing; it simply never issues an x402 challenge. Pass
+ * `{ registerOnOkx: true }` for genuine customer capabilities, and leave it off
+ * for discovery, infrastructure and event-plumbing routes.
+ */
 function free(
   entry: Omit<ServiceCatalogEntry, "paid" | "x402Price" | "available" | "registerOnOkx" | "idempotency">,
+  options: { registerOnOkx?: boolean } = {},
 ): ServiceCatalogEntry & { paid: false; x402Price: null } {
   return {
     ...entry,
     paid: false,
     x402Price: null,
     available: true,
-    registerOnOkx: false,
+    registerOnOkx: options.registerOnOkx ?? false,
     idempotency: entry.method === "POST" ? "recommended" : "not-applicable",
   }
 }
@@ -121,7 +131,7 @@ export const EMAIL_SERVICES = {
     mainErrors: ["AUTH_REQUIRED"],
     nextServiceId: "email.message.send",
     guide: "/docs#email-flow",
-  }),
+  }, { registerOnOkx: true }),
   updateMailbox: paid({
     id: "email.mailbox.update",
     area: "email",
@@ -189,7 +199,7 @@ export const EMAIL_SERVICES = {
     mainErrors: ["AUTH_REQUIRED", "RESOURCE_NOT_OWNED", "RESOURCE_NOT_FOUND"],
     nextServiceId: "events.list",
     guide: "/docs#email-flow",
-  }),
+  }, { registerOnOkx: true }),
 } as const satisfies Record<string, ServiceCatalogEntry>
 
 export const PHONE_SERVICES = {
@@ -331,7 +341,7 @@ export const FREE_PHONE_SERVICES = {
     mainErrors: ["AUTH_REQUIRED", "RESOURCE_NOT_OWNED", "INVALID_REQUEST", "PROVIDER_ERROR"],
     nextServiceId: "phone.number.us.30d",
     guide: "/docs#number-renewal",
-  }),
+  }, { registerOnOkx: true }),
   listNumbers: free({
     id: "phone.number.list",
     area: "phone",
@@ -348,7 +358,7 @@ export const FREE_PHONE_SERVICES = {
     mainErrors: ["AUTH_REQUIRED"],
     nextServiceId: "phone.call.outbound.1m",
     guide: "/docs#phone-flow",
-  }),
+  }, { registerOnOkx: true }),
   getCall: free({
     id: "phone.call.get",
     area: "phone",
@@ -365,7 +375,7 @@ export const FREE_PHONE_SERVICES = {
     mainErrors: ["AUTH_REQUIRED", "RESOURCE_NOT_FOUND"],
     nextServiceId: "phone.call.transcript",
     guide: "/docs#phone-flow",
-  }),
+  }, { registerOnOkx: true }),
   getTranscript: free({
     id: "phone.call.transcript",
     area: "phone",
@@ -382,7 +392,7 @@ export const FREE_PHONE_SERVICES = {
     mainErrors: ["AUTH_REQUIRED", "RESOURCE_NOT_FOUND"],
     nextServiceId: "events.list",
     guide: "/docs#phone-flow",
-  }),
+  }, { registerOnOkx: true }),
 } as const satisfies Record<string, ServiceCatalogEntry>
 
 export const EVENT_SERVICES = {
