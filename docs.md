@@ -402,11 +402,20 @@ production schema exactly:
 5. `20260724105855_foreign_key_indexes.sql`
 6. `20260724110457_gateway_only_event_access.sql`
 7. `20260724222712_dashboard_wallet_sessions.sql`
-8. `20260727120000_live_voice_websocket.sql`
-9. `20260727130000_bootstrap_token_once.sql`
+8. `20260727203201_live_voice_websocket.sql`
+9. `20260727203347_bootstrap_token_once.sql`
+10. `20260727203500_drop_legacy_reserve_inbound_call.sql` — **do not apply until the live-voice build is deployed**
 
-Migrations 1–7 were already applied in production. Migrations 8 and 9 are new and
+Migrations 1–7 were already applied in production. Migrations 8–10 are new and
 forward-only. No already-applied migration was edited.
+
+Migration 10 is the CONTRACT half of an expand/contract change and is the one
+migration that is **not** safe to apply with the others against production.
+Migration 8 adds a seven-argument `v1_reserve_inbound_call` alongside the existing
+eight-argument one; the deployed application still calls the eight-argument
+version, so both must coexist until the live-voice build is running. Apply
+migration 10 only after that deploy is confirmed. Against an empty database the
+ordering is harmless, because no old application exists.
 
 `20260724105725_unified_durable_events.sql` adds event statuses, expiry, delivery
 leases/attempts, tenant/agent/type/resource indexes, the atomic event claim
@@ -427,7 +436,7 @@ irreproducible.
 
 `v1_phone_numbers.agent_webhook_url`, `v1_phone_numbers.agent_webhook_secret_encrypted`
 and `v1_calls.agent_webhook_url` belonged to the retired customer-webhook contract.
-`20260727120000_live_voice_websocket.sql` makes them nullable and stops all reads
+`20260727203201_live_voice_websocket.sql` makes them nullable and stops all reads
 and writes, but keeps the columns so that rows provisioned before the change retain
 their history and so earlier migrations stay reproducible. They are never returned
 in any customer-facing response.

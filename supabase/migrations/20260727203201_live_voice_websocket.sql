@@ -25,10 +25,20 @@ comment on column public.v1_phone_numbers.agent_webhook_secret_encrypted is
 comment on column public.v1_calls.agent_webhook_url is
   'Retired. Live voice uses the AgentOS WebSocket gateway. Retained nullable for migration safety; never read, written or exposed.';
 
--- Inbound call reservation no longer takes a customer callback URL. Replace the
--- eight-argument version with a seven-argument one; argument count cannot change
--- via create or replace.
-drop function if exists public.v1_reserve_inbound_call(uuid, uuid, text, text, timestamptz, text, text, text);
+-- Inbound call reservation no longer takes a customer callback URL.
+--
+-- EXPAND phase of an expand/contract change. The seven-argument version is ADDED
+-- alongside the existing eight-argument one; the old signature is deliberately
+-- NOT dropped here. The currently deployed application still calls the
+-- eight-argument version, so dropping it in the same migration would break live
+-- inbound calls in the window between applying this migration and deploying the
+-- new application code.
+--
+-- PostgREST resolves overloads by the set of named arguments supplied, so both
+-- callers work simultaneously with no ambiguity.
+--
+-- The CONTRACT phase is 20260727203500_drop_legacy_reserve_inbound_call.sql.
+-- Apply it only after the application no longer sends p_agent_webhook_url.
 
 create or replace function public.v1_reserve_inbound_call(
   p_tenant_id uuid,

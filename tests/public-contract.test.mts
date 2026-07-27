@@ -207,7 +207,7 @@ test("bootstrap token issuance is claimed once and replays do not mint tokens", 
 })
 
 test("the bootstrap claim is enforced by the database, not only in application code", () => {
-  const migration = read("supabase/migrations/20260727130000_bootstrap_token_once.sql")
+  const migration = read("supabase/migrations/20260727203347_bootstrap_token_once.sql")
   assert.match(migration, /add column if not exists bootstrap_token_issued_at/)
   assert.match(migration, /update public\.v1_users/, "existing token holders are backfilled")
 })

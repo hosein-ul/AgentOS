@@ -111,19 +111,54 @@ test("the legacy AgentMail schema is retained and documented as unused", () => {
 })
 
 test("the retired webhook columns are kept nullable, not dropped", () => {
-  const migration = sql.get("20260727120000_live_voice_websocket.sql")!
+  const migration = sql.get("20260727203201_live_voice_websocket.sql")!
   assert.match(migration, /alter column agent_webhook_url drop not null/)
   assert.doesNotMatch(migration, /drop column/, "dropping would break earlier migrations")
   assert.match(migration, /comment on column/, "the retired columns are labelled in the database")
   assert.match(readFileSync(join(process.cwd(), "docs.md"), "utf8"), /Retained legacy columns/)
 })
 
-test("the inbound-call function is replaced, not left with a stale signature", () => {
-  const migration = sql.get("20260727120000_live_voice_websocket.sql")!
-  // Argument count cannot change via create or replace, so the old one must go.
-  assert.match(migration, /drop function if exists public\.v1_reserve_inbound_call\(uuid, uuid, text, text, timestamptz, text, text, text\)/)
-  assert.match(migration, /create or replace function\s+public\.v1_reserve_inbound_call/)
-  assert.doesNotMatch(migration.split("returns public.v1_calls")[0], /p_agent_webhook_url/)
+test("the inbound-call signature change is expand/contract, not a breaking drop", () => {
+  const expand = sql.get("20260727203201_live_voice_websocket.sql")!
+  // Compare the declared signature, not the surrounding prose.
+  const signature = strip(expand).slice(
+    strip(expand).indexOf("create or replace function"),
+    strip(expand).indexOf("returns public.v1_calls"),
+  )
+  assert.match(signature, /public\.v1_reserve_inbound_call/)
+  assert.doesNotMatch(signature, /p_agent_webhook_url/, "the new overload drops the callback URL")
+  // The eight-argument one is NOT dropped in the same migration, because the
+  // previously deployed application still calls it.
+  assert.doesNotMatch(strip(expand), /drop\s+function/i, "dropping here would break the deployed app")
+  assert.match(expand, /EXPAND phase/)
+
+  const contract = sql.get("20260727203500_drop_legacy_reserve_inbound_call.sql")!
+  assert.match(contract, /drop function if exists public\.v1_reserve_inbound_call\(\s*uuid, uuid, text, text, timestamptz, text, text, text\s*\)/)
+  assert.match(contract, /DO NOT APPLY/, "the ordering constraint must be explicit")
+})
+
+test("a contract migration sorts after the expand migration it depends on", () => {
+  // The contract phase drops the old overload. If it sorted first it would run
+  // before the replacement overload exists, so a fresh database would be left
+  // with no v1_reserve_inbound_call at all.
+  const expand = files.find((name) => name.includes("live_voice_websocket"))
+  const contract = files.find((name) => name.includes("drop_legacy_reserve_inbound_call"))
+  assert.ok(expand && contract, "both phases must exist")
+  assert.ok(
+    contract! > expand!,
+    `${contract} must sort after ${expand}, or the drop runs before the replacement is created`,
+  )
+
+  // Whatever a contract migration drops, some earlier migration must create.
+  for (const name of files) {
+    for (const match of strip(sql.get(name)!).matchAll(/drop function if exists\s+public\.(\w+)/gi)) {
+      const fn = match[1]
+      const createdEarlier = files
+        .filter((candidate) => candidate < name)
+        .some((candidate) => new RegExp(`create or replace function\\s+public\\.${fn}\\b`, "i").test(sql.get(candidate)!))
+      assert.ok(createdEarlier, `${name} drops public.${fn} but no earlier migration creates it`)
+    }
+  }
 })
 
 test("privileged functions stay service-role only", () => {
