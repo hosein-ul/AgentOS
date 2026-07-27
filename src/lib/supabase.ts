@@ -1,20 +1,38 @@
-import { createClient } from "@supabase/supabase-js"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://localhost.invalid"
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY ?? "build-time-placeholder"
+let serverClient: SupabaseClient | null = null
 
-// This legacy export exists only while the dashboard is being retired. New
-// production routes must call requireServerSupabase() below. Never fall back to
-// the public anon key on the server: direct database access must remain denied.
-export const supabase = createClient(url, key, {
-  auth: { persistSession: false },
-})
-
-export function requireServerSupabase() {
-  const serverUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY
-  if (!serverUrl || !serviceKey) {
+function databaseConfig() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
+  const key = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+    ?? process.env.SUPABASE_SERVICE_KEY
+  )?.trim()
+  if (!url || !key) {
     throw new Error("Server database configuration is incomplete")
   }
-  return createClient(serverUrl, serviceKey, { auth: { persistSession: false } })
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL must be a valid HTTPS URL")
+  }
+  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL must use HTTPS")
+  }
+  return { url, key }
+}
+
+export function requireServerSupabase() {
+  if (!serverClient) {
+    const { url, key } = databaseConfig()
+    serverClient = createClient(url, key, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
+      },
+    })
+  }
+  return serverClient
 }

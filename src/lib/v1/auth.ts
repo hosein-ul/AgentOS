@@ -48,6 +48,40 @@ export async function getTenantById(tenantId: string): Promise<Tenant> {
   return { id: data.id, walletAddress: data.wallet_address }
 }
 
+/**
+ * Claim the one-time right to issue this tenant's bootstrap access token.
+ *
+ * The conditional update is the concurrency control: exactly one caller can flip
+ * bootstrap_token_issued_at from NULL, so simultaneous bootstrap requests and
+ * idempotent replays cannot mint more than one permanent credential.
+ */
+export async function claimBootstrapTokenIssuance(tenantId: string) {
+  const { data, error } = await requireServerSupabase()
+    .from("v1_users")
+    .update({ bootstrap_token_issued_at: new Date().toISOString() })
+    .eq("id", tenantId)
+    .is("bootstrap_token_issued_at", null)
+    .select("id")
+    .maybeSingle()
+  if (error) throw new Error(`Bootstrap token claim failed: ${error.message}`)
+  return Boolean(data)
+}
+
+/**
+ * What a caller is told when the bootstrap token was already issued. No plaintext
+ * token is stored, so AgentOS cannot and does not return a replacement here.
+ */
+export function alreadyIssuedAuthentication(tenant: Tenant) {
+  return {
+    status: "already_issued" as const,
+    accessToken: null,
+    walletAddress: tenant.walletAddress,
+    message: "This wallet's AgentOS access token was already issued and is shown only once. Reuse the stored token across Email, Phone and Events.",
+    recovery: "Lost the token? Sign in at /dashboard with this wallet and issue a replacement, then revoke the old one.",
+    guide: "/docs#access-token-recovery",
+  }
+}
+
 export async function issueAccessToken(tenantId: string) {
   const token = `at_v1_${randomBytes(32).toString("base64url")}`
   const expiresAt = null

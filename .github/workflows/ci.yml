@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Build-time placeholders only. No real provider is contacted and no paid
+      # operation runs in CI: the tests are deterministic and fully mocked.
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_SUPABASE_URL: "https://ci.example.supabase.co"
+      SUPABASE_SERVICE_ROLE_KEY: "ci-placeholder-service-role-key"
+      APP_URL: "https://ci.example.com"
+      AGENTOS_APP_URL: "https://ci.example.com"
+      REALTIME_GATEWAY_URL: "wss://ci.example.com/v1/events"
+      REALTIME_GATEWAY_JWT_SECRET: "ci-placeholder-realtime-jwt-secret-0000"
+      REALTIME_GATEWAY_INTERNAL_URL: "https://ci.example.com"
+      REALTIME_GATEWAY_INTERNAL_SECRET: "ci-placeholder-internal-secret-000000"
+      DASHBOARD_SESSION_SECRET: "ci-placeholder-dashboard-session-secret"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Check migration ordering
+        # Migration filenames must stay in applied order and carry a full
+        # 14-digit timestamp, so a fresh database reproduces production.
+        run: |
+          set -euo pipefail
+          ls supabase/migrations/*.sql | sed 's|.*/||' > /tmp/migrations.txt
+          if ! grep -qE '^[0-9]{14}_[a-z0-9_]+\.sql$' /tmp/migrations.txt; then
+            echo "no migrations matched the expected naming pattern"; exit 1
+          fi
+          while read -r name; do
+            if ! echo "$name" | grep -qE '^[0-9]{14}_[a-z0-9_]+\.sql$'; then
+              echo "migration '$name' must be <14-digit-timestamp>_<name>.sql"; exit 1
+            fi
+          done < /tmp/migrations.txt
+          if ! sort -c /tmp/migrations.txt; then
+            echo "migrations are not in timestamp order"; exit 1
+          fi
+          echo "migrations are well-formed and ordered"

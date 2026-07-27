@@ -9,5 +9,5 @@ export async function GET(request: NextRequest) {
     const raw = Number(request.nextUrl.searchParams.get("limit") ?? 100)
     const limit = Number.isInteger(raw) ? raw : 100
     return { items: await listPhoneNumbers(tenant, limit) }
-  })
+  }, "phone.number.list")
 }

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireServerSupabase } from "@/lib/supabase"
 import {
+  alreadyIssuedAuthentication,
   assertPaymentTenant,
+  claimBootstrapTokenIssuance,
   getOrCreateTenant,
   getTenantById,
   issueAccessToken,
@@ -16,7 +18,7 @@ import {
   requestHash,
 } from "./idempotency"
 import { prepareV1Payment, settleV1Payment } from "./payment"
-import { getServiceByEndpoint, SERVICE_CATALOG } from "./service-catalog"
+import { getServiceByEndpoint, getServiceById, SERVICE_CATALOG } from "./service-catalog"
 
 export const guide = "/docs#api-contract"
 
@@ -67,11 +69,15 @@ function preflightCatalogInput(endpoint: string, body: Record<string, unknown>) 
       throw new ApiError("INVALID_REQUEST", `${field} is required`, 400)
     }
   }
-  if (
-    "agentWebhookUrl" in body
-    && (typeof body.agentWebhookUrl !== "string" || !body.agentWebhookUrl.startsWith("https://"))
-  ) {
-    throw new ApiError("INVALID_REQUEST", "agentWebhookUrl must be a public HTTPS URL", 400)
+  // Customer Agents no longer expose a public webhook. Reject the retired field
+  // explicitly so an Agent built against the old contract gets a clear error
+  // instead of silently having its callback ignored.
+  if ("agentWebhookUrl" in body) {
+    throw new ApiError(
+      "INVALID_REQUEST",
+      "agentWebhookUrl is no longer accepted. Live calls are answered over the AgentOS WebSocket; see /docs#live-voice-protocol",
+      400,
+    )
   }
   if (
     "toNumber" in body
@@ -135,19 +141,46 @@ function attachBootstrapToken(body: unknown, token: { token: string; expiresAt: 
   return { result: body, authentication }
 }
 
-function attachTokenToStoredResponse(
-  body: unknown,
-  token: { token: string; expiresAt: string | null },
-  tenant: Tenant,
-) {
+/**
+ * Replay of a completed bootstrap request. The stored business response is
+ * returned unchanged, with an explicit note that authentication was already
+ * issued. No new token is minted and no fabricated replacement is returned.
+ */
+function attachAlreadyIssuedNotice(body: unknown, tenant: Tenant) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body
   const response = body as Record<string, unknown>
-  return { ...response, data: attachBootstrapToken(response.data, token, tenant) }
+  const data = response.data
+  const authentication = alreadyIssuedAuthentication(tenant)
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    return { ...response, data: { ...(data as Record<string, unknown>), authentication } }
+  }
+  return { ...response, authentication }
 }
 
-export async function v1Read(request: NextRequest, handler: (tenant: Tenant) => Promise<unknown>) {
+/**
+ * GET-native business endpoints keep their normal behaviour. `serviceId` only
+ * adds a link to the machine-readable guide for the operation, so agents can
+ * discover usage without the GET contract changing.
+ */
+export async function v1Read(
+  request: NextRequest,
+  handler: (tenant: Tenant) => Promise<unknown>,
+  serviceId?: string,
+) {
   try {
-    return apiData(await handler(await requireTenant(request)), guide)
+    const service = serviceId ? getServiceById(serviceId) : null
+    const response = await apiData(await handler(await requireTenant(request)), guide)
+    if (!service) return response
+    const payload = await response.clone().json() as Record<string, unknown>
+    return NextResponse.json({
+      ...payload,
+      serviceId: service.id,
+      guides: {
+        ...(payload.guides as Record<string, unknown>),
+        serviceGuide: `/api/v1/services/${service.id}`,
+        operation: service.guide,
+      },
+    }, { status: response.status })
   } catch (error) {
     return apiError(error, guide)
   }
@@ -241,11 +274,12 @@ export async function v1Paid(
       )
     }
     if (state.kind === "replay") {
-      const token = bootstrap ? await issueAccessToken(tenant.id) : null
+      // A completed replay never repeats the provider operation and never issues
+      // another permanent credential.
       const replaySettlement = state.settlementHeader
         ?? (payment.kind === "settled" ? payment.settlementHeader : "")
       return NextResponse.json(
-        token ? attachTokenToStoredResponse(state.body, token, tenant) : state.body,
+        bootstrap ? attachAlreadyIssuedNotice(state.body, tenant) : state.body,
         {
           status: state.status,
           headers: {
@@ -319,10 +353,20 @@ export async function v1Paid(
       settlement.paymentPayloadHash,
       settlement.settlementHeader,
     )
-    const token = bootstrap ? await issueAccessToken(tenant.id) : null
+    // Issue the permanent token only on the first successful paid provisioning
+    // for this wallet, and only if this request wins the atomic claim.
+    const token = bootstrap && await claimBootstrapTokenIssuance(tenant.id)
+      ? await issueAccessToken(tenant.id)
+      : null
     const response = token
       ? apiData(attachBootstrapToken(result.body, token, tenant), guide, result.status ?? 200)
-      : storedResponse
+      : bootstrap
+        ? apiData(
+            { ...(result.body as Record<string, unknown>), authentication: alreadyIssuedAuthentication(tenant) },
+            guide,
+            result.status ?? 200,
+          )
+        : storedResponse
     response.headers.set("PAYMENT-RESPONSE", settlement.settlementHeader)
     return response
   } catch (error) {

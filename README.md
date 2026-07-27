@@ -21,7 +21,7 @@ Agents need durable identities and communication infrastructure, not one-off too
 | --- | --- | --- | --- |
 | Email | Resend | v1 mailbox/send/query and verified inbound event flow implemented | Requires v1 migrations and provider E2E |
 | Phone | AgentPhone | v1 number/call/renew/release/transcript and durable jobs implemented | Requires v1 migrations, worker, gateway, and funded provider E2E |
-| Domain | Namecheap adapter | real adapter exists, public v1 route is fail-closed | Not marketplace-ready |
+| Domain | none (Cloudflare planned) | unavailable; v1 route is fail-closed 503 | Not implemented |
 | Realtime | Separate Node WebSocket gateway + Supabase | gateway, replay, delivery lease, and socket ack implemented | Not yet deployed |
 | Scheduling | Supabase jobs + separate worker + daily Vercel sweep | implemented in repository | AgentOS is not linked to a connected Vercel project |
 
@@ -42,7 +42,6 @@ flowchart LR
   V --> P["AgentPhone"]
   P -->|"signed live webhook"| V
   V -->|"signed callback"| A
-  V -. "disabled until static egress" .-> N["Namecheap"]
 ```
 
 Postgres is the source of truth for tenants, token hashes, payment/idempotency ledgers, provider resources, events, entitlements, and jobs. WebSocket delivery never replaces durable persistence.
@@ -139,16 +138,18 @@ The event carries IDs, sender, subject, and time. It omits body and attachment c
 
 ## Phone architecture
 
-Phone provisioning creates a real AgentPhone webhook-mode agent and number. The caller supplies a public HTTPS `agentWebhookUrl`. AgentOS returns a one-time callback verification secret and stores it encrypted.
+Phone provisioning creates a real AgentPhone agent and number. The customer Agent never exposes a public webhook and AgentOS never calls a customer-supplied URL: live calls are answered over the AgentOS WebSocket gateway.
 
 Live conversation:
 
 1. AgentPhone signs a provider webhook to AgentOS.
 2. AgentOS verifies HMAC/replay window and resolves the exact tenant.
 3. Recording/media URL fields are stripped.
-4. The event is forwarded to the external agent with an AgentOS timestamped HMAC.
-5. The agent dynamically returns text, hangup, or a supported NDJSON stream.
+4. AgentOS sends one `voice.turn` to that tenant's authenticated WebSocket and waits, briefly, for `voice.response`.
+5. The agent dynamically returns text or hangup before the stated deadline.
 6. AgentOS relays that response to AgentPhone.
+
+A turn is answered exactly once, only by a socket authenticated for the same tenant, and only before its deadline. If no socket is connected, the socket drops, the deadline passes, or the reply is invalid or belongs to another tenant, AgentOS speaks a safe fallback instead of failing silently. Turns are never persisted or replayed; durable lifecycle events such as `phone.call.ended` still go through the event inbox. See `/docs#live-voice-protocol`.
 
 AgentOS does not substitute a preconfigured hosted assistant. The external AI agent controls the conversation turn by turn.
 
@@ -212,11 +213,19 @@ Pro is needed only if Vercel itself must schedule more than daily. Even on Pro, 
 
 Local migrations:
 
-1. `20260723_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
-2. `20260724064040_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
-3. `20260724150000_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
-4. `20260724160000_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
-5. `20260724170000_gateway_only_event_access.sql` — removes direct browser access after moving delivery to the authenticated AgentOS gateway.
+Filenames match the versions production actually recorded, so a fresh database
+reproduces the production schema. See `docs.md` for the full migration notes.
+
+1. `20260715060100_init_agentmail.sql` — retained legacy AgentMail tables. Unused by v1, but migration 5 indexes two of them.
+2. `20260724105651_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
+3. `20260724105706_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
+4. `20260724105725_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
+5. `20260724105855_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
+6. `20260724110457_gateway_only_event_access.sql` — removes direct browser access after moving delivery to the authenticated AgentOS gateway.
+7. `20260724222712_dashboard_wallet_sessions.sql` — wallet sign-in nonces for the owner dashboard.
+8. `20260727203201_live_voice_websocket.sql` — retires the customer webhook columns; EXPAND phase adding the seven-argument inbound-call reservation.
+9. `20260727203347_bootstrap_token_once.sql` — one-time bootstrap access-token claim, with backfill.
+10. `20260727203500_drop_legacy_reserve_inbound_call.sql` — CONTRACT phase. **Do not apply until the live-voice build is deployed**; the running application still calls the eight-argument overload.
 
 The connected `agentmail` Supabase project was upgraded from its legacy-only schema during this implementation. RLS is now enabled on all 21 public tables and `anon/authenticated` have no direct public-table grants. Security advisors report no ERROR/WARN findings; the remaining INFO notices are expected deny-all tables with RLS and no client policies. Performance advisors report only unused-index notices because the v1 tables have no workload yet.
 
@@ -226,7 +235,7 @@ Server application access uses the Supabase service role and still applies tenan
 
 Copy `.env.example` and configure:
 
-- application: `APP_URL`, owner dashboard Basic credentials;
+- application: `APP_URL`, wallet-dashboard session secret, and private admin Basic credentials;
 - Supabase: URL and service role;
 - OKX x402: API key, secret, passphrase, payment wallet;
 - Resend: API key, webhook secret, verified domain;
@@ -234,7 +243,7 @@ Copy `.env.example` and configure:
 - scheduling: `CRON_SECRET`;
 - realtime: WSS gateway URL and JWT secret;
 - external worker: app URL and interval;
-- Namecheap values only after Domain activation.
+- Leave Domain variables unset; Domain is unavailable.
 
 Never commit real provider or payment credentials. Rotate any secret posted in chat or issue history.
 
@@ -281,11 +290,15 @@ Deploy `npm run durable-worker` as a single or horizontally safe long-lived proc
 
 - Resend webhook: `https://APP_URL/api/v1/webhooks/resend`.
 - AgentPhone webhook is configured per agent during purchase.
-- Namecheap must have stable allowlisted IPv4 before enabling Domain.
+- Domain requires Cloudflare-backed support that is not implemented; no configuration enables it.
 
 ## Dashboard
 
-`/dashboard/**` remains accessible to the owner through HTTP Basic Auth. It is private admin tooling, separate from agent tokens, and must never be exposed as an A2MCP service. Legacy supporting routes receive the same edge protection.
+`/dashboard/**` is the public owner portal. The owner connects an injected wallet with RainbowKit and signs a gas-free one-time message. AgentOS verifies the signature, creates a 12-hour HttpOnly session, and scopes all dashboard reads and actions to the wallet’s tenant.
+
+The dashboard exposes real mailbox, message, AgentPhone, transcript, durable-event, payment-ledger, domain-inventory, and agent-token management. Paid buttons perform the same fixed-price OKX x402 flow as the public API and require the selected payment wallet to match the signed-in owner wallet. No provider result or balance is mocked.
+
+`/admin/**` is the operator-only cross-tenant view and remains protected by HTTP Basic Auth. Neither dashboard nor admin routes are OKX.AI marketplace services.
 
 ## Idempotency and payment reconciliation
 
@@ -304,7 +317,7 @@ Paid operations require `Idempotency-Key`. Each record binds tenant, endpoint, r
 - no trusted tenant IDs;
 - database uniqueness for provider/idempotency keys;
 - no recordings;
-- owner dashboard separated from agent auth;
+- wallet-owner dashboard, private operator admin, and agent bearer auth kept separate;
 - internal routes protected by `CRON_SECRET`.
 
 ## Observability and failure recovery

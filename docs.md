@@ -2,6 +2,14 @@
 
 This is the source-controlled guide for autonomous agents and operators. The deployed canonical resources are `/docs`, `/llms.txt`, `/api/v1/services`, and `/openapi.json`.
 
+## Owner dashboard and private administration
+
+`/dashboard` is the public wallet-owner portal. The owner connects an injected EVM wallet through RainbowKit and signs an expiring, one-time AgentOS message. The server verifies that signature and creates a 12-hour HttpOnly browser session. Every dashboard database query and action is scoped to the tenant belonging to that exact wallet.
+
+The dashboard never asks the owner to paste an existing `at_v1_…` token. Its **Agent tokens** page can issue a new permanent server-to-server token after the wallet has created its first resource. The plaintext secret is shown exactly once; AgentOS persists only its SHA-256 hash. Revocation is wallet-session authenticated.
+
+`/admin` is separate operator-only tooling, protected by `ADMIN_DASHBOARD_USERNAME` and `ADMIN_DASHBOARD_PASSWORD`. It shows cross-tenant operational totals; it must never be shared with Agents or customers.
+
 AgentOS is an OKX.AI REST ASP. It uses real Resend and AgentPhone provider calls, fixed AgentOS catalog prices, wallet-based tenant ownership, and OKX x402 per paid operation. It is not MCP and never returns a mocked provider success.
 
 ## Discovery and onboarding
@@ -25,7 +33,7 @@ Available first provisioning calls:
 | `phone.number.us.30d` | POST `/api/v1/phone/purchase-us-number-30-days` | 5.00 USDT |
 | `phone.number.ca.30d` | POST `/api/v1/phone/purchase-canada-number-30-days` | 5.00 USDT |
 
-`domain.register` exists only as a fail-closed 503 route. It never requests or settles payment until fixed per-TLD services and stable registrar egress are ready.
+`domain.register` is unavailable and exists only as a fail-closed 503 route. It never issues an x402 challenge, never requests or settles payment, and never contacts a registrar. Cloudflare-backed domain support is planned but not implemented.
 
 Calling any secondary paid endpoint without a token returns HTTP 428:
 
@@ -42,8 +50,7 @@ Calling any secondary paid endpoint without a token returns HTTP 428:
       "price": "5.00",
       "currency": "USDT",
       "requiredInput": {
-        "agentName": "Agent name",
-        "agentWebhookUrl": "Public HTTPS live-agent callback URL"
+        "agentName": "Agent name"
       }
     }
   },
@@ -148,33 +155,83 @@ Purchase:
 ```json
 {
   "agentName": "support-agent",
-  "agentWebhookUrl": "https://agent.example.com/voice",
   "areaCode": "415",
   "beginMessage": "Hello, how can I help?",
   "language": "en-US"
 }
 ```
 
-The response contains the AgentOS `phoneNumberId`, E.164 number, entitlement dates, and a one-time callback verification secret. AgentOS creates a real AgentPhone webhook-mode agent and number.
+The response contains the AgentOS `phoneNumberId`, E.164 number, entitlement dates, and live-voice connection instructions. AgentOS creates a real AgentPhone agent and number. There is no `agentWebhookUrl` and no customer callback secret.
 
-AgentPhone sends signed live events to `/api/v1/webhooks/agentphone`. AgentOS verifies provider HMAC, strips recording/media URL fields, resolves the exact tenant, and forwards the event to the supplied callback with:
+### Live voice over WebSocket
+
+The customer Agent never exposes a public webhook, and AgentOS never calls a customer-supplied URL. The Agent connects out to the AgentOS gateway and answers turns in real time:
 
 ```text
-X-AgentOS-Timestamp: unix-seconds
-X-AgentOS-Signature: sha256=HMAC_SHA256(callbackSecret, timestamp + "." + exactRawJson)
+AgentPhone
+  -> AgentOS provider webhook   (/api/v1/webhooks/agentphone, provider HMAC verified)
+  -> AgentOS live gateway
+  -> customer Agent over WebSocket   (voice.turn)
+  -> customer Agent response         (voice.response)
+  -> AgentOS
+  -> AgentPhone TTS/voice response
 ```
 
-For `agent.message`, the external agent responds dynamically:
+Authenticate the socket exactly as for durable events (`GET /api/v1/events/realtime-token`, then `session.authenticate`). The same socket then carries two distinct protocols:
+
+| | Durable notification events | Synchronous live voice turns |
+| --- | --- | --- |
+| Message | `event.delivery` | `voice.turn` |
+| Reply | `event.ack` | `voice.response` |
+| Stored in `v1_events` | yes | no |
+| Replayed after reconnect | yes | never |
+| Deadline | none; leased and redelivered | strict, stated per turn |
+
+A durable event is never used in place of a live voice turn. Lifecycle events such as `phone.call.ended` stay durable and must still be acknowledged.
+
+AgentOS sends:
 
 ```json
-{"text":"The live response"}
+{
+  "type": "voice.turn",
+  "turnId": "vt_...",
+  "callId": "uuid",
+  "phoneNumberId": "uuid",
+  "providerCallId": "...",
+  "direction": "inbound",
+  "fromNumber": "+14155550123",
+  "toNumber": "+14155550100",
+  "transcript": "what the caller said",
+  "deadline": "ISO-8601",
+  "deadlineMs": 8000
+}
 ```
 
-or:
+The Agent answers before the deadline:
 
 ```json
-{"hangup":true}
+{"type":"voice.response","turnId":"vt_...","text":"The live response","hangup":false}
 ```
+
+or ends the call:
+
+```json
+{"type":"voice.response","turnId":"vt_...","hangup":true}
+```
+
+or declines the turn and lets AgentOS speak its fallback:
+
+```json
+{"type":"voice.cancel","turnId":"vt_..."}
+```
+
+If the deadline passes first, AgentOS sends `voice.timeout` for that `turnId` and a late response is rejected.
+
+Enforced by the gateway: a turn is answered exactly once; a response is accepted only from a socket authenticated for the same tenant; unknown `turnId`s are rejected; `text` is capped at 2000 characters; only `text`, `hangup`, `action` and `digits` are forwarded; frames are capped at 256 KiB; pending turns are bounded.
+
+The call fails safely, never silently, when no authenticated socket is connected, the socket disconnects, the deadline passes, the response is invalid, the response belongs to another tenant/call/turn, or the same turn is answered twice. AgentOS then speaks a fallback line: an unreachable Agent ends the call, a single slow turn keeps it alive.
+
+Only transcript text and text actions cross this boundary. AgentOS receives transcript text from AgentPhone and returns text or an action. No raw audio is stored or exposed.
 
 Recording is out of scope. No recording controls, endpoints, URLs, or prices are exposed. Only transcripts are available.
 
@@ -319,7 +376,8 @@ async def events(websocket_url, realtime_token):
 - GET/POST `/api/v1/internal/phone-worker`: `CRON_SECRET`-protected short batch.
 - `wss://.../v1/events`: WebSocket upgrade served by the separate gateway.
 - Gateway `/health`.
-- `/dashboard/**`: owner-only Basic-auth dashboard.
+- `/dashboard/**` and `/api/dashboard/**`: wallet-signature owner portal and its session-authenticated internal routes.
+- `/admin/**`: operator-only Basic-auth administration.
 
 These must not be registered as OKX.AI paid services.
 
@@ -333,17 +391,62 @@ These must not be registered as OKX.AI paid services.
 
 ## Database and migrations
 
-Apply in timestamp order:
+Apply in timestamp order. Repository filenames now match the versions production
+actually recorded, so `supabase db push` against an empty project reproduces the
+production schema exactly:
 
-1. `20260723_agentos_v1.sql`
-2. `20260724064040_agentphone_phone_lifecycle.sql`
-3. `20260724150000_unified_durable_events.sql`
-4. `20260724160000_foreign_key_indexes.sql`
-5. `20260724170000_gateway_only_event_access.sql`
+1. `20260715060100_init_agentmail.sql`
+2. `20260724105651_agentos_v1.sql`
+3. `20260724105706_agentphone_phone_lifecycle.sql`
+4. `20260724105725_unified_durable_events.sql`
+5. `20260724105855_foreign_key_indexes.sql`
+6. `20260724110457_gateway_only_event_access.sql`
+7. `20260724222712_dashboard_wallet_sessions.sql`
+8. `20260727203201_live_voice_websocket.sql`
+9. `20260727203347_bootstrap_token_once.sql`
+10. `20260727203500_drop_legacy_reserve_inbound_call.sql` — **do not apply until the live-voice build is deployed**
 
-The last migration adds event statuses, expiry, delivery leases/attempts, tenant/agent/type/resource indexes, the atomic event claim function, mailbox-scoped Resend uniqueness, and explicit hardening of named legacy tables. It does not delete data.
+Migrations 1–7 were already applied in production. Migrations 8–10 are new and
+forward-only. No already-applied migration was edited.
 
-The connected `agentmail` database now contains the legacy migration plus all five v1 migrations. All 21 public tables have RLS enabled; `anon/authenticated` have no direct public-table grants; event/job claim functions are service-role-only. Security advisors have no ERROR/WARN findings. Remaining INFO notices are expected deny-all RLS tables and unused indexes on empty v1 tables.
+Migration 10 is the CONTRACT half of an expand/contract change and is the one
+migration that is **not** safe to apply with the others against production.
+Migration 8 adds a seven-argument `v1_reserve_inbound_call` alongside the existing
+eight-argument one; the deployed application still calls the eight-argument
+version, so both must coexist until the live-voice build is running. Apply
+migration 10 only after that deploy is confirmed. Against an empty database the
+ordering is harmless, because no old application exists.
+
+`20260724105725_unified_durable_events.sql` adds event statuses, expiry, delivery
+leases/attempts, tenant/agent/type/resource indexes, the atomic event claim
+function, mailbox-scoped Resend uniqueness, and hardening of named legacy tables.
+It deletes no data.
+
+### Retained legacy schema
+
+`20260715060100_init_agentmail.sql` recreates the original AgentMail tables
+(`User`, `Agent`, `Email`, `Attachment`, `ApiKey`, `EmailTemplate`). It is retained
+deliberately, not revived: no v1 route reads or writes these tables. It must exist
+because `20260724105855_foreign_key_indexes.sql` indexes `Attachment` and
+`EmailTemplate`, so without it a fresh database cannot apply the migration set.
+Dropping the tables instead would make an already-applied production migration
+irreproducible.
+
+### Retained legacy columns
+
+`v1_phone_numbers.agent_webhook_url`, `v1_phone_numbers.agent_webhook_secret_encrypted`
+and `v1_calls.agent_webhook_url` belonged to the retired customer-webhook contract.
+`20260727203201_live_voice_websocket.sql` makes them nullable and stops all reads
+and writes, but keeps the columns so that rows provisioned before the change retain
+their history and so earlier migrations stay reproducible. They are never returned
+in any customer-facing response.
+
+`v1_users.bootstrap_token_issued_at` is new, not legacy. It records the one-time
+bootstrap token claim and is backfilled for wallets that already hold a token.
+
+The connected `agentmail` database contains the legacy migration plus the v1
+migrations. All public tables have RLS enabled; `anon`/`authenticated` have no
+direct public-table grants; event and job claim functions are service-role-only.
 
 ## Environment variables
 
@@ -379,11 +482,9 @@ Worker/realtime:
 - `REALTIME_GATEWAY_JWT_SECRET`
 - worker-only `AGENTOS_APP_URL`, optional `WORKER_INTERVAL_MS`
 
-Domain (disabled until ready):
+Domain (unavailable; not close to production):
 
-- `NAMECHEAP_API_USER`, `NAMECHEAP_API_KEY`, `NAMECHEAP_USERNAME`
-- `NAMECHEAP_CLIENT_IP`, `NAMECHEAP_SANDBOX`
-- `DOMAIN_CONTACT_ENCRYPTION_KEY`
+Leave every Domain variable unset. The legacy Namecheap variables belong to an unused adapter; setting them does not enable Domain and is not a step toward it.
 
 ## Local development and deployment
 
@@ -417,7 +518,7 @@ Provider setup:
 
 - Resend webhook: `https://APP_URL/api/v1/webhooks/resend`.
 - AgentPhone webhooks are configured during phone provisioning.
-- Namecheap requires a stable allowlisted public IPv4 before Domain can be enabled.
+- Domain stays unavailable. Enabling it requires Cloudflare-backed support that is not implemented; no configuration change turns it on.
 
 ## Errors and recovery
 
@@ -446,4 +547,4 @@ Provider setup:
 - WebSocket tokens are sent in an authentication message, not in URLs.
 - Provider and callback secrets are encrypted at rest.
 - Recordings are stripped and never exposed.
-- Owner dashboard Basic Auth is separate from agent bearer auth.
+- Owner dashboard wallet sessions, operator Basic Auth, and agent bearer tokens are three separate authentication surfaces.

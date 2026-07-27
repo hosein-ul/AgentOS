@@ -1,3 +1,5 @@
+import { isAddress } from "viem"
+
 const required = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
@@ -16,6 +18,13 @@ export function requireProductionConfig() {
   const missing = required.filter((name) => !process.env[name])
   if (missing.length) throw new Error(`Missing required production configuration: ${missing.join(", ")}`)
   if (process.env.PAYMENT_REQUIRED !== "true") throw new Error("PAYMENT_REQUIRED must be true in production")
+  if (!isValidPaymentWallet(process.env.PAYMENT_WALLET)) {
+    throw new Error("PAYMENT_WALLET must be a valid checksummed EVM address")
+  }
+}
+
+export function isValidPaymentWallet(value: string | undefined) {
+  return Boolean(value && isAddress(value, { strict: true }))
 }
 
 export function isSafeProductionUrl(value: string) {

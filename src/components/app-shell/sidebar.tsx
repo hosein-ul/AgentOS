@@ -12,19 +12,32 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 
 interface SidebarProps {
   collapsed: boolean
+  mobileOpen: boolean
+  onCloseMobile: () => void
   onToggle: () => void
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ collapsed, mobileOpen, onCloseMobile, onToggle }: SidebarProps) {
   const pathname = usePathname()
 
   return (
     <TooltipProvider delayDuration={0}>
+      {mobileOpen ? (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={onCloseMobile}
+        />
+      ) : null}
       <motion.aside
         initial={false}
-        animate={{ width: collapsed ? 68 : 256 }}
+        animate={{ width: mobileOpen ? 256 : collapsed ? 68 : 256 }}
         transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}
-        className="relative shrink-0 border-r border-line bg-surface flex flex-col"
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex shrink-0 flex-col border-r border-line bg-surface transition-transform md:relative md:z-auto md:translate-x-0",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+        )}
       >
         {/* Brand */}
         <div className="h-14 flex items-center gap-2.5 px-4 border-b border-line">
@@ -75,6 +88,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 const link = (
                   <Link
                     href={item.href}
+                    onClick={onCloseMobile}
                     className={cn(
                       "relative flex items-center gap-2.5 rounded-md h-9 px-2.5 text-[13px]",
                       "transition-colors duration-[var(--dur-fast)]",
@@ -120,7 +134,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </nav>
 
         {/* Collapse toggle */}
-        <div className="border-t border-line p-2">
+        <div className="hidden border-t border-line p-2 md:block">
           <Button
             variant="ghost"
             size="sm"

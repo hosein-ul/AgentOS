@@ -120,24 +120,22 @@ export async function GET() {
       [PHONE_SERVICES.purchaseUsNumber30Days.endpoint]: {
         post: paidPost("Purchase a US AgentPhone number for 30 days", PHONE_SERVICES.purchaseUsNumber30Days.amount, jsonBody({
           agentName: string(),
-          agentWebhookUrl: { type: "string", format: "uri", pattern: "^https://" },
           areaCode: { type: "string", pattern: "^[0-9]{3}$" },
           description: string(),
           beginMessage: string(),
           voice: string(),
           language: string(),
-        }, ["agentName", "agentWebhookUrl"]), false),
+        }, ["agentName"]), false),
       },
       [PHONE_SERVICES.purchaseCanadaNumber30Days.endpoint]: {
         post: paidPost("Purchase a Canadian AgentPhone number for 30 days", PHONE_SERVICES.purchaseCanadaNumber30Days.amount, jsonBody({
           agentName: string(),
-          agentWebhookUrl: { type: "string", format: "uri", pattern: "^https://" },
           areaCode: { type: "string", pattern: "^[0-9]{3}$" },
           description: string(),
           beginMessage: string(),
           voice: string(),
           language: string(),
-        }, ["agentName", "agentWebhookUrl"]), false),
+        }, ["agentName"]), false),
       },
       [PHONE_SERVICES.renewNumber30Days.endpoint]: {
         post: paidPost("Renew one active number for another 30 days", PHONE_SERVICES.renewNumber30Days.amount, jsonBody({

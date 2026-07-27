@@ -1,5 +1,7 @@
 import { AppShell } from "@/components/app-shell"
+import { requireDashboardSession } from "@/lib/dashboard-auth"
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return <AppShell>{children}</AppShell>
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const session = await requireDashboardSession()
+  return <AppShell walletAddress={session.walletAddress}>{children}</AppShell>
 }

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server"
 import { startOutboundCall } from "@/lib/v1/phone"
 import { v1Paid } from "@/lib/v1/route"
 import { PHONE_SERVICES } from "@/lib/v1/service-catalog"
+import { serviceGuideResponse } from "@/lib/v1/guide"
 
 export const runtime = "nodejs"
 
@@ -11,4 +12,10 @@ export async function POST(request: NextRequest) {
     status: 201,
     body: await startOutboundCall(tenant, body, service, 300),
   }))
+}
+
+// GET returns the machine-readable usage guide for this operation. It executes
+// nothing, contacts no provider, creates no payment and mutates no data.
+export async function GET() {
+  return serviceGuideResponse("phone.call.outbound.5m")
 }

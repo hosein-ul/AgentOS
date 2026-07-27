@@ -1,150 +1,82 @@
-"use client"
+import Link from "next/link"
+import { ExternalLink, LockKeyhole, Wallet } from "lucide-react"
+import { PageContainer, PageHeader, Section } from "@/components/ui/section"
+import { Card } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { requireDashboardSession } from "@/lib/dashboard-auth"
+import { SERVICE_CATALOG } from "@/lib/v1/service-catalog"
 
+export const dynamic = "force-dynamic"
 
-export default function SettingsPage() {
-  const origin = ""
-
-  const aspServices: { path: string; price: string }[] = [
-    { path: "/api/asp/mailbox/list", price: "free" },
-    { path: "/api/asp/inbox/get", price: "free" },
-    { path: "/api/asp/email/get", price: "free" },
-    { path: "/api/asp/thread/get", price: "free" },
-    { path: "/api/asp/email/mark-read", price: "free" },
-    { path: "/api/asp/email/mark-unread", price: "free" },
-    { path: "/api/asp/email/archive", price: "free" },
-    { path: "/api/asp/email/delete", price: "free" },
-    { path: "/api/asp/email/attachments", price: "free" },
-    { path: "/api/asp/mailbox/create", price: "$0.25" },
-    { path: "/api/asp/email/send", price: "$0.02" },
-    { path: "/api/asp/template/send", price: "$0.02" },
-    { path: "/api/asp/email/reply", price: "$0.01" },
-    { path: "/api/asp/email/reply-all", price: "$0.01" },
-    { path: "/api/asp/email/forward", price: "$0.01" },
-    { path: "/api/asp/template/send-bulk", price: "$0.05" },
-    { path: "/api/asp/mailbox/update", price: "$0.005" },
-    { path: "/api/asp/mailbox/delete", price: "$0.005" },
-    { path: "/api/asp/email/cancel-scheduled", price: "$0.005" },
-    { path: "/api/asp/email/search", price: "$0.005" },
-    { path: "/api/asp/template/create", price: "free" },
-    { path: "/api/asp/template/list", price: "free" },
-    { path: "/api/asp/template/delete", price: "free" },
-  ]
+export default async function SettingsPage() {
+  const session = await requireDashboardSession()
+  const publicServices = SERVICE_CATALOG.filter((service) => service.registerOnOkx)
 
   return (
-    <div className="max-w-2xl mx-auto px-8 py-8">
-      <div className="mb-8">
-        <h1 className="font-serif text-3xl">Settings</h1>
-        <p className="text-sm text-ink-2 mt-1">Account and integration configuration</p>
+    <PageContainer>
+      <PageHeader
+        title="Account & integration"
+        description="Wallet ownership, tenant binding, and the canonical ASP service catalogue."
+        actions={<Button variant="secondary" asChild><Link href="/dashboard/guide">Open agent guide <ExternalLink /></Link></Button>}
+      />
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card className="p-5">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-lg bg-elevated"><Wallet className="size-4" /></div>
+            <div>
+              <p className="text-sm font-semibold">Owner wallet</p>
+              <p className="font-mono text-xs text-muted">{session.walletAddress}</p>
+            </div>
+          </div>
+          <dl className="mt-5 grid gap-3 text-sm">
+            <div className="flex justify-between gap-4"><dt className="text-text-2">Tenant</dt><dd className="font-mono text-xs">{session.tenantId ?? "Created after first purchase"}</dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-text-2">Dashboard session</dt><dd><Badge variant="positive" dot>Wallet verified</Badge></dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-text-2">Agent authentication</dt><dd className="text-right text-xs">Permanent bearer token</dd></div>
+          </dl>
+        </Card>
+
+        <Card className="p-5">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-lg bg-elevated"><LockKeyhole className="size-4" /></div>
+            <div>
+              <p className="text-sm font-semibold">Isolation model</p>
+              <p className="text-xs text-muted">Every database query includes the wallet-bound tenant ID.</p>
+            </div>
+          </div>
+          <p className="mt-5 text-xs leading-5 text-text-2">
+            Dashboard signatures are gas-free and create a short-lived HttpOnly session. Autonomous agents use a separate API token. x402 payment proof authorizes only the paid operation and must come from the same owner wallet.
+          </p>
+        </Card>
       </div>
 
-      <div className="space-y-6">
-        {/* Account */}
-        <section className="border border-line rounded">
-          <div className="px-5 py-3 border-b border-line">
-            <p className="text-sm font-medium">Account</p>
-          </div>
-          <div className="px-5 py-4 space-y-4">
-            <div>
-              <label className="block text-xs text-ink-2 mb-1.5">Account email</label>
-              <input
-                type="email"
-                value={`demo@${process.env.NEXT_PUBLIC_EMAIL_DOMAIN ?? "localhost"}`}
-                disabled
-                className="w-full px-3 py-2 text-sm bg-surface-sub border border-line rounded text-ink-2 font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-ink-2 mb-1.5">Email domain</label>
-              <input
-                type="text"
-                value={process.env.NEXT_PUBLIC_EMAIL_DOMAIN ?? "not configured"}
-                disabled
-                className="w-full px-3 py-2 text-sm bg-surface-sub border border-line rounded text-ink-2 font-mono"
-              />
-              <p className="text-xs text-ink-3 mt-1.5">All agent mailboxes use this domain</p>
-            </div>
-          </div>
-        </section>
-
-        {/* Resend */}
-        <section className="border border-line rounded">
-          <div className="px-5 py-3 border-b border-line">
-            <p className="text-sm font-medium">Resend</p>
-          </div>
-          <div className="px-5 py-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm">API key</p>
-                <p className="text-xs text-ink-3 mt-0.5">Set RESEND_API_KEY in .env</p>
-              </div>
-              <span className="text-xs font-mono text-ink-3 bg-surface-sub px-2 py-1 rounded border border-line">
-                not configured
-              </span>
-            </div>
-            <div>
-              <p className="text-xs text-ink-2 mb-1.5">Inbound email webhook</p>
-              <pre className="text-xs font-mono text-ink bg-surface-sub border border-line rounded px-3 py-2 overflow-x-auto">
-                POST {origin}/api/webhooks/inbound
-              </pre>
-              <p className="text-xs text-ink-3 mt-1.5">
-                Add this URL in Resend › Webhooks and subscribe to the{" "}
-                <code className="font-mono">email.received</code> event
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-ink-2 mb-1.5">Webhook signing secret</p>
-              <p className="text-xs text-ink-3">
-                Copy the signing secret from Resend › Webhooks › your endpoint and set{" "}
-                <code className="font-mono">RESEND_WEBHOOK_SECRET</code> in .env
-              </p>
-            </div>
-          </div>
-        </section>
-
-        {/* OKX.AI */}
-        <section className="border border-line rounded">
-          <div className="px-5 py-3 border-b border-line">
-            <p className="text-sm font-medium">OKX.AI ASP</p>
-          </div>
-          <div className="px-5 py-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <p className="text-sm">Service type</p>
-              <span className="text-xs font-mono text-amber bg-amber-bg px-2 py-1 rounded">
-                A2MCP · x402 pay-per-call
-              </span>
-            </div>
-            <div>
-              <p className="text-xs text-ink-2 mb-1.5">Service discovery</p>
-              <pre className="text-xs font-mono text-ink bg-surface-sub border border-line rounded px-3 py-2 overflow-x-auto">
-                GET {origin}/api/asp
-              </pre>
-              <p className="text-xs text-ink-3 mt-1.5">
-                Each service below is a separate endpoint registered on OKX.AI with its own price (USDT0 on X Layer · eip155:196)
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-ink-2 mb-2">Registered endpoints</p>
-              <div className="border border-line rounded divide-y divide-line">
-                {aspServices.map((svc) => (
-                  <div key={svc.path} className="flex items-center justify-between px-3 py-1.5">
-                    <code className="text-xs font-mono text-ink-2">POST {svc.path}</code>
-                    <span
-                      className={
-                        "text-xs font-mono px-2 py-0.5 rounded " +
-                        (svc.price === "free"
-                          ? "text-ink-3 bg-surface-sub"
-                          : "text-amber bg-amber-bg")
-                      }
-                    >
-                      {svc.price}
-                    </span>
-                  </div>
+      <Section title="OKX.AI fixed-price services" description="Canonical available paid endpoints only. Provider price changes do not modify these public ASP prices.">
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[850px] text-[13px]">
+              <thead>
+                <tr className="border-b border-line text-left text-[11px] uppercase tracking-[.06em] text-muted">
+                  <th className="px-5 py-3">Service ID</th>
+                  <th className="px-5 py-3">Endpoint</th>
+                  <th className="px-5 py-3">Price</th>
+                  <th className="px-5 py-3 text-right">Guide</th>
+                </tr>
+              </thead>
+              <tbody>
+                {publicServices.map((service) => (
+                  <tr key={service.id} className="border-b border-line last:border-0 hover:bg-elevated/50">
+                    <td className="px-5 py-3 font-mono text-xs">{service.id}</td>
+                    <td className="px-5 py-3 font-mono text-xs text-text-2">{service.method} {service.endpoint}</td>
+                    <td className="px-5 py-3 font-mono">{service.amount} {service.currency}</td>
+                    <td className="px-5 py-3 text-right"><Link href={service.guide} className="text-accent hover:underline">Open</Link></td>
+                  </tr>
                 ))}
-              </div>
-            </div>
+              </tbody>
+            </table>
           </div>
-        </section>
-      </div>
-    </div>
+        </Card>
+      </Section>
+    </PageContainer>
   )
 }
