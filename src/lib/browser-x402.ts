@@ -6,8 +6,6 @@ import { getAccount, getWalletClient, switchChain } from "wagmi/actions"
 import { xLayer } from "viem/chains"
 import { walletConfig } from "@/lib/wallet-config"
 
-function idempotencyKey() { return crypto.randomUUID() }
-
 export async function paidDashboardPost(serviceId: string, input: Record<string, unknown>) {
   const account = getAccount(walletConfig)
   if (!account.isConnected || !account.address) {
@@ -22,10 +20,9 @@ export async function paidDashboardPost(serviceId: string, input: Record<string,
   })
   if (!walletClient) throw new Error("The selected wallet is unavailable")
   const address = account.address
-  const key = idempotencyKey()
   const makeRequest = (headers: Record<string, string> = {}) => fetch("/api/dashboard/service", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": key, ...headers },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify({ serviceId, input }),
   })
   const first = await makeRequest()

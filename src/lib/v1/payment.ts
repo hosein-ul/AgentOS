@@ -36,8 +36,21 @@ export type PreviouslySettledPayment = {
   paymentPayloadHash: string
   settlementHeader: string
   endpoint: string | null
-  idempotencyKey: string | null
   requestHash: string | null
+  // Set once the paid operation finished. Replaying the same payment proof
+  // returns this stored response instead of running the provider call again,
+  // which is what keeps a network retry from provisioning a second resource.
+  responseStatus: number | null
+  responseBody: unknown
+}
+
+/**
+ * Stable hash of the request body. It binds a payment proof to the exact
+ * request it paid for, so the same proof cannot be redirected at a different
+ * body. This is payment-proof integrity, not idempotency bookkeeping.
+ */
+export function requestHash(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
 let initialized: Promise<PaymentServer> | null = null
@@ -152,7 +165,7 @@ export async function prepareV1Payment(
   const db = requireServerSupabase()
   const { data: existing, error: existingError } = await db
     .from("v1_payments")
-    .select("tenant_id,payer_wallet,payment_payload_hash,settlement_header,endpoint,idempotency_key,request_hash")
+    .select("tenant_id,payer_wallet,payment_payload_hash,settlement_header,endpoint,request_hash,response_status,response_body")
     .eq("payment_payload_hash", decoded.hash)
     .maybeSingle()
   if (existingError) return paymentError("PAYMENT_CONFIGURATION_ERROR", "Payment ledger is unavailable", 503)
@@ -164,8 +177,9 @@ export async function prepareV1Payment(
       paymentPayloadHash: existing.payment_payload_hash,
       settlementHeader: existing.settlement_header,
       endpoint: existing.endpoint,
-      idempotencyKey: existing.idempotency_key,
       requestHash: existing.request_hash,
+      responseStatus: existing.response_status,
+      responseBody: existing.response_body,
     }
   }
 
@@ -194,7 +208,6 @@ export async function settleV1Payment(input: {
   payment: VerifiedPayment
   tenant: Tenant
   endpoint: string
-  idempotencyKey: string
   requestHash: string
 }) {
   const serviceId = getServiceByEndpoint(input.endpoint)?.id ?? input.endpoint
@@ -231,7 +244,6 @@ export async function settleV1Payment(input: {
     service_id: serviceId,
     payer_wallet: input.tenant.walletAddress,
     payment_payload_hash: input.payment.paymentPayloadHash,
-    idempotency_key: input.idempotencyKey,
     request_hash: input.requestHash,
     settlement,
     settlement_header: settlementHeader,
@@ -240,14 +252,13 @@ export async function settleV1Payment(input: {
   })
   if (error?.code === "23505") {
     const { data: existing } = await db.from("v1_payments")
-      .select("tenant_id,endpoint,idempotency_key,request_hash,settlement_header")
+      .select("tenant_id,endpoint,request_hash,settlement_header")
       .eq("payment_payload_hash", input.payment.paymentPayloadHash)
       .maybeSingle()
     if (
       !existing
       || existing.tenant_id !== input.tenant.id
       || existing.endpoint !== input.endpoint
-      || existing.idempotency_key !== input.idempotencyKey
       || existing.request_hash !== input.requestHash
     ) {
       throw new ApiError("payment_replay_conflict", "Payment proof was already used for another operation", 409)
@@ -272,4 +283,32 @@ export async function settleV1Payment(input: {
     },
   })
   return { settlementHeader, paymentPayloadHash: input.payment.paymentPayloadHash }
+}
+
+/**
+ * Record the outcome of a paid operation against its payment proof, so that a
+ * retry of the same proof replays this response rather than repeating the
+ * provider call. Failures are stored too: a settled payment whose handler
+ * failed must not be silently retried into a second provider charge.
+ */
+export async function recordPaidResponse(
+  paymentPayloadHash: string,
+  status: number,
+  body: unknown,
+) {
+  const { error } = await requireServerSupabase()
+    .from("v1_payments")
+    .update({
+      response_status: status,
+      response_body: body,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("payment_payload_hash", paymentPayloadHash)
+  if (error) {
+    throw new ApiError(
+      "payment_ledger_error",
+      "The operation completed but its result could not be recorded; contact support before retrying",
+      503,
+    )
+  }
 }

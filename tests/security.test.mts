@@ -13,7 +13,7 @@ process.env.REALTIME_GATEWAY_JWT_SECRET ??= "r".repeat(48)
 const { verifyAgentPhoneWebhook, stripProviderMediaFields } = await import("../src/lib/v1/agentphone.ts")
 const { encryptPhoneSecret, decryptPhoneSecret } = await import("../src/lib/v1/secrets.ts")
 const { issueRealtimeToken, verifyRealtimeToken } = await import("../src/lib/v1/events.ts")
-const { requestHash } = await import("../src/lib/v1/idempotency.ts")
+const { requestHash } = await import("../src/lib/v1/payment.ts")
 
 function agentPhoneHeaders(body: string, secret: string, timestamp = String(Math.floor(Date.now() / 1000))) {
   return new Headers({
@@ -149,15 +149,38 @@ test("payment proofs bind to the exact request body", () => {
   assert.notEqual(requestHash(body), requestHash({ ...body, subject: "Hi " }))
 })
 
-test("a paid request binds its proof to endpoint, body and idempotency key", () => {
+test("a paid request binds its proof to the exact endpoint and body", () => {
   const route = read("src/lib/v1/route.ts")
   const binding = route.slice(route.indexOf('payment.kind === "settled"'))
   assert.match(binding, /payment\.endpoint !== endpoint/)
-  assert.match(binding, /payment\.idempotencyKey !== idempotencyKey/)
   assert.match(binding, /payment\.requestHash !== bodyHash/)
   assert.match(binding, /payment_replay_conflict/)
-  // A second proof cannot be swapped onto an in-flight key.
-  assert.match(route, /idempotency_payment_conflict/)
+})
+
+test("no route requires, reads or fabricates an Idempotency-Key", () => {
+  for (const file of [
+    "src/lib/v1/route.ts",
+    "src/lib/v1/payment.ts",
+    "src/lib/dashboard-route.ts",
+    "src/lib/browser-x402.ts",
+  ]) {
+    const source = read(file)
+    assert.doesNotMatch(source, /idempotency-key/i, `${file} must not use the Idempotency-Key header`)
+    assert.doesNotMatch(source, /idempotencyKey/, `${file} must not carry an idempotency key`)
+    assert.doesNotMatch(source, /idempotency_key/, `${file} must not persist an idempotency key`)
+  }
+})
+
+test("a replayed payment proof returns the stored response instead of re-running the operation", () => {
+  // Without this the proof still settles only once, but the provider call would
+  // run again and provision a second paid resource for free.
+  const route = read("src/lib/v1/route.ts")
+  assert.match(route, /payment\.responseStatus !== null/)
+  assert.match(route, /x-payment-replay/)
+  assert.match(route, /recordPaidResponse\(/)
+  const dashboard = read("src/lib/dashboard-route.ts")
+  assert.match(dashboard, /payment\.responseStatus !== null/)
+  assert.match(dashboard, /recordPaidResponse\(/)
 })
 
 test("the payer wallet must match the access-token tenant", () => {

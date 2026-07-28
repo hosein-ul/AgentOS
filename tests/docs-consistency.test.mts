@@ -95,9 +95,8 @@ test("customer docs no longer imply Domain is close to production via Namecheap"
   }
 })
 
-test("docs state the token bootstrap, x402 per-operation and idempotency rules", () => {
+test("docs state the token bootstrap and x402 per-operation rules", () => {
   assert.match(agentDocs, /x402/i)
-  assert.match(agentDocs, /Idempotency-Key/)
   assert.match(agentDocs, /shown only once|only once/i)
   assert.match(agentDocs, /Reuse the same token across Email, Phone/)
   assert.match(llmsText, /x402/i)

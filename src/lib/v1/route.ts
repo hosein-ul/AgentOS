@@ -11,13 +11,7 @@ import {
   type Tenant,
 } from "./auth"
 import { ApiError, apiData, apiError, readJson } from "./http"
-import {
-  beginIdempotentRequest,
-  bindIdempotentPayment,
-  completeIdempotentRequest,
-  requestHash,
-} from "./idempotency"
-import { prepareV1Payment, settleV1Payment } from "./payment"
+import { prepareV1Payment, recordPaidResponse, requestHash, settleV1Payment } from "./payment"
 import { getServiceByEndpoint, getServiceById, SERVICE_CATALOG } from "./service-catalog"
 
 export const guide = "/docs#api-contract"
@@ -239,19 +233,13 @@ export async function v1Paid(
     const payment = await prepareV1Payment(request, endpoint, price, description, body)
     if (payment.kind === "blocked") return payment.response
 
-    const idempotencyKey = request.headers.get("idempotency-key")?.trim()
-    if (!idempotencyKey) {
-      throw new ApiError("idempotency_required", "Idempotency-Key is required for paid requests")
-    }
     const bodyHash = requestHash(body)
 
     let tenant: Tenant
     if (payment.kind === "settled") {
-      if (
-        payment.endpoint !== endpoint
-        || payment.idempotencyKey !== idempotencyKey
-        || payment.requestHash !== bodyHash
-      ) {
+      // The proof is bound to the request it paid for. A proof cannot be
+      // redirected at a different endpoint or a different body.
+      if (payment.endpoint !== endpoint || payment.requestHash !== bodyHash) {
         throw new ApiError(
           "payment_replay_conflict",
           "This payment proof is already bound to a different request",
@@ -260,98 +248,48 @@ export async function v1Paid(
       }
       tenant = existingTenant ?? await getTenantById(payment.tenantId)
       if (existingTenant) assertPaymentTenant(existingTenant, payment.payer)
+      // The operation this proof paid for already ran. Replay its stored
+      // result; never repeat the provider call and never mint a second
+      // permanent credential.
+      if (payment.responseStatus !== null) {
+        return NextResponse.json(
+          bootstrap ? attachAlreadyIssuedNotice(payment.responseBody, tenant) : payment.responseBody,
+          {
+            status: payment.responseStatus,
+            headers: {
+              ...(payment.settlementHeader ? { "PAYMENT-RESPONSE": payment.settlementHeader } : {}),
+              "x-payment-replay": "true",
+            },
+          },
+        )
+      }
     } else {
       tenant = existingTenant ?? await getOrCreateTenant(payment.payer)
       if (existingTenant) assertPaymentTenant(existingTenant, payment.payer)
     }
 
-    const state = await beginIdempotentRequest(tenant.id, endpoint, idempotencyKey, bodyHash)
-    if (state.kind === "conflict") {
-      throw new ApiError(
-        "idempotency_conflict",
-        "Idempotency-Key was already used with a different request",
-        409,
-      )
-    }
-    if (state.kind === "replay") {
-      // A completed replay never repeats the provider operation and never issues
-      // another permanent credential.
-      const replaySettlement = state.settlementHeader
-        ?? (payment.kind === "settled" ? payment.settlementHeader : "")
-      return NextResponse.json(
-        bootstrap ? attachAlreadyIssuedNotice(state.body, tenant) : state.body,
-        {
-          status: state.status,
-          headers: {
-            ...(replaySettlement ? { "PAYMENT-RESPONSE": replaySettlement } : {}),
-            "x-idempotent-replay": "true",
-          },
-        },
-      )
-    }
-    if (
-      state.kind === "in_progress"
-      && state.paymentPayloadHash
-      && state.paymentPayloadHash !== payment.paymentPayloadHash
-    ) {
-      throw new ApiError(
-        "idempotency_payment_conflict",
-        "This Idempotency-Key is associated with another payment proof",
-        409,
-      )
-    }
-    if (state.kind === "in_progress") {
-      throw new ApiError(
-        "idempotency_in_progress",
-        "A matching paid operation is still in progress; retry the same request",
-        409,
-      )
-    }
-
     const settlement = payment.kind === "settled"
       ? payment
-      : await settleV1Payment({
-          payment,
-          tenant,
-          endpoint,
-          idempotencyKey,
-          requestHash: bodyHash,
-        })
-
-    await bindIdempotentPayment(
-      tenant.id,
-      endpoint,
-      idempotencyKey,
-      settlement.paymentPayloadHash,
-      settlement.settlementHeader,
-    )
+      : await settleV1Payment({ payment, tenant, endpoint, requestHash: bodyHash })
 
     let result: { status?: number; body: unknown }
     try {
       result = await handler(tenant, body)
     } catch (handlerError) {
       const failedResponse = apiError(handlerError, guide)
-      await completeIdempotentRequest(
-        tenant.id,
-        endpoint,
-        idempotencyKey,
+      await recordPaidResponse(
+        settlement.paymentPayloadHash,
         failedResponse.status,
         await failedResponse.clone().json(),
-        settlement.paymentPayloadHash,
-        settlement.settlementHeader,
       )
       failedResponse.headers.set("PAYMENT-RESPONSE", settlement.settlementHeader)
       return failedResponse
     }
     const storedResponse = apiData(result.body, guide, result.status ?? 200)
-    await completeIdempotentRequest(
-      tenant.id,
-      endpoint,
-      idempotencyKey,
+    await recordPaidResponse(
+      settlement.paymentPayloadHash,
       storedResponse.status,
       await storedResponse.clone().json(),
-      settlement.paymentPayloadHash,
-      settlement.settlementHeader,
     )
     // Issue the permanent token only on the first successful paid provisioning
     // for this wallet, and only if this request wins the atomic claim.

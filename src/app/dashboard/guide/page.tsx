@@ -22,7 +22,7 @@ export default function GuidePage() {
           The first settled start-service payment creates one tenant bound to its payer wallet. Every mailbox, phone number, call, event, and domain row stores that tenant ID.
         </StepCard>
         <StepCard number="2" icon={<CreditCard />} title="Buy the first resource">
-          Call a start-here endpoint without a token. Handle HTTP 402, sign the fixed x402 payment, and retry the byte-equivalent request with the same Idempotency-Key.
+          Call a start-here endpoint without a token. Handle HTTP 402, sign the fixed x402 payment, and retry the byte-equivalent request with the PAYMENT-SIGNATURE header.
         </StepCard>
         <StepCard number="3" icon={<KeyRound />} title="Store the API token">
           The successful first public purchase returns authentication.accessToken once. Dashboard users can also create a permanent token on the Agent tokens page.
@@ -35,7 +35,7 @@ export default function GuidePage() {
           <li>Dashboard login is a gas-free wallet signature and produces an HttpOnly browser session.</li>
           <li>Agent API calls use <code>Authorization: Bearer at_v1_…</code>. One token works across all services owned by the same wallet tenant.</li>
           <li>Each paid endpoint has its own fixed price and its own HTTP 402 challenge. Creating a token is free.</li>
-          <li><code>Idempotency-Key</code> prevents duplicate paid operations; it is not authentication and has no price.</li>
+          <li>No idempotency header is required or accepted. Replaying the same <code>PAYMENT-SIGNATURE</code> returns the stored response instead of repeating the operation.</li>
           <li>Never send an AgentOS API token to AgentPhone, Resend, OKX, or a third-party callback.</li>
         </ul>
       </Card>

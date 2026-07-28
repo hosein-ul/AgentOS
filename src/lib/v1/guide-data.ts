@@ -47,10 +47,10 @@ function paymentInstructions(service: ServiceCatalogEntry) {
     amount: service.amount,
     currency: service.currency,
     steps: [
-      `Send ${service.method} ${service.endpoint} with an Idempotency-Key header and the request body.`,
-      "AgentOS replies HTTP 402 with a PAYMENT-REQUIRED challenge bound to this exact endpoint, body and Idempotency-Key.",
-      "Pay the challenge and replay the identical request with the PAYMENT-SIGNATURE header, the same Idempotency-Key and the same body.",
-      "A changed body or Idempotency-Key invalidates the proof and returns HTTP 409.",
+      `Send ${service.method} ${service.endpoint} with the request body.`,
+      "AgentOS replies HTTP 402 with a PAYMENT-REQUIRED challenge bound to this exact endpoint and body.",
+      "Pay the challenge and replay the identical request with the PAYMENT-SIGNATURE header and the same body.",
+      "A changed body invalidates the proof and returns HTTP 409. Replaying the same proof returns the original response without repeating the operation.",
     ],
     note: "Every paid operation requires its own payment. The access token does not prepay anything.",
   }
@@ -103,15 +103,6 @@ export function buildOperationGuide(
       x402Price: service.x402Price,
     },
     startHere: service.startHere,
-    idempotency: {
-      requirement: service.idempotency,
-      header: service.idempotency === "not-applicable" ? null : "Idempotency-Key",
-      note: service.idempotency === "required"
-        ? "Required. Reusing a key with the same body replays the stored response without repeating the operation or the payment."
-        : service.idempotency === "recommended"
-          ? "Recommended so retries stay safe."
-          : "Not applicable to this operation.",
-    },
     requiredInput: service.requiredInput,
     optionalInput: service.optionalInput,
     exampleRequest: {
@@ -120,7 +111,6 @@ export function buildOperationGuide(
       headers: {
         "content-type": "application/json",
         ...(service.authenticated && !service.startHere ? { authorization: "Bearer at_v1_..." } : {}),
-        ...(service.idempotency === "not-applicable" ? {} : { "idempotency-key": "<unique per operation>" }),
       },
       body: exampleBody(service),
     },

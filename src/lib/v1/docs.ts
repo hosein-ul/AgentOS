@@ -51,22 +51,22 @@ There is no paid token endpoint.
 1. Send the start-here business request without Authorization.
 2. Receive HTTP 402 and PAYMENT-REQUIRED.
 3. Use the OKX Agent Payments Protocol client to quote, obtain user approval, pay, and replay the identical method, URL, and body.
-4. On replay send PAYMENT-SIGNATURE and Idempotency-Key.
+4. On replay send PAYMENT-SIGNATURE.
 5. AgentOS verifies the payer and request binding, settles once, performs the real provider operation, and returns authentication.accessToken.
 6. Store the at_v1 token. It has no automatic expiry and belongs to the payer wallet tenant.
 7. Reuse the same token across Email, Phone, Events, and future Domain services. Every later paid service still has its own fixed x402 charge.
 
 The x402 payer of a secondary request must equal the wallet bound to the bearer token. A missing token returns ONBOARDING_REQUIRED, an invalid/revoked token returns AUTH_REQUIRED, and a valid token cannot access another tenant's resource. Resource ownership preflight occurs before payment preparation where an input ID identifies a mailbox, phone number, or call.
 
-Idempotency-Key is required on paid POSTs. It is not authentication and has no price. Reuse the same key only for a byte-equivalent retry. A key is bound to tenant, endpoint, request hash, and payment proof.
+No idempotency header is required or accepted. The payment proof is the identity of a paid operation: it is bound to the endpoint and the request body, it settles at most once, and replaying it returns the stored response instead of repeating the operation.
 
 ## Access token recovery
 
 The access token is issued exactly once per wallet and is shown only once. AgentOS
 stores only its SHA-256 hash and can never show it again.
 
-Replaying the first provisioning request does not mint a second token. A completed
-idempotent replay returns the stored business response together with:
+Replaying the first provisioning request does not mint a second token. Replaying a
+completed payment proof returns the stored business response together with:
 
 ~~~json
 {
@@ -389,7 +389,7 @@ Vercel Pro is required only if Vercel itself must invoke cron more than daily. I
 - FORBIDDEN / RESOURCE_NOT_OWNED: never substitute a tenant ID; use a resource owned by this token.
 - PAYMENT_REQUIRED: quote, confirm, pay, and replay the identical request.
 - PAYMENT_PENDING: do not submit a second payment; poll/retry unchanged.
-- IDEMPOTENCY_CONFLICT: use the original body or a new key for a genuinely new operation.
+- PAYMENT_REPLAY_CONFLICT: this proof paid for a different request; pay for the new operation separately.
 - RESOURCE_NOT_FOUND: refresh owned resources; do not guess IDs.
 - PROVIDER_TEMPORARY_FAILURE: retry the same operation with the same key/proof after backoff.
 - ALLOWANCE_EXHAUSTED: buy inbound minutes before accepting more inbound speech.
@@ -426,7 +426,7 @@ AgentOS is a wallet-isolated REST ASP for autonomous agents on OKX.AI. It provid
 
 ## Authentication
 
-Wallet/payer identity creates the tenant boundary. First send the provisioning body, receive PAYMENT-REQUIRED, use an OKX x402 quote/pay flow with explicit payer approval, and replay the identical request with PAYMENT-SIGNATURE and Idempotency-Key. Save the returned at_v1 access token. It has no automatic expiry and is shared across all services for the same wallet. Every paid endpoint has an independent fixed charge.
+Wallet/payer identity creates the tenant boundary. First send the provisioning body, receive PAYMENT-REQUIRED, use an OKX x402 quote/pay flow with explicit payer approval, and replay the identical request with PAYMENT-SIGNATURE. Save the returned at_v1 access token. It has no automatic expiry and is shared across all services for the same wallet. Every paid endpoint has an independent fixed charge.
 
 The realtime token is different: obtain it from GET /api/v1/events/realtime-token. It expires after 15 minutes and authenticates only the WebSocket event session.
 
@@ -469,16 +469,16 @@ Email events contain IDs/from/subject/time, not body or attachments. Supported e
 - AUTH_REQUIRED or INVALID_TOKEN: use the correct at_v1 token.
 - PAYMENT_REQUIRED: quote, confirm, pay, replay unchanged.
 - PAYMENT_PENDING: do not pay twice.
-- IDEMPOTENCY_CONFLICT: retry the original body/key or start a new logical operation.
+- PAYMENT_REPLAY_CONFLICT: the proof belongs to another request; pay separately for a new operation.
 - RESOURCE_NOT_FOUND / RESOURCE_NOT_OWNED: refresh owned IDs; never guess tenant IDs.
 - PROVIDER_TEMPORARY_FAILURE: retry unchanged with backoff.
 - ALLOWANCE_EXHAUSTED: buy inbound allowance.
 - NUMBER_EXPIRING: renew now.
 - NUMBER_RELEASED: buy a new number.
 
-## Idempotency
+## Safe Retries
 
-Send Idempotency-Key on every paid mutation. Reuse it only with the identical method, endpoint, body, and payment proof after an ambiguous response.
+No idempotency header is required or accepted. Retry an ambiguous paid request by replaying it byte-for-byte with the same PAYMENT-SIGNATURE. The proof settles at most once and the stored response is returned, so a retry never provisions a second resource or charges twice.
 
 ## Fixed Pricing
 
@@ -488,7 +488,7 @@ Public prices come only from the AgentOS service catalog and do not change autom
 
 1. GET /api/v1/services/email.mailbox.create.
 2. POST the mailbox body; receive 402.
-3. Quote/pay with explicit approval and replay with PAYMENT-SIGNATURE plus Idempotency-Key.
+3. Quote/pay with explicit approval and replay with PAYMENT-SIGNATURE.
 4. Save authentication.accessToken.
 5. GET /api/v1/events/realtime-token with Authorization: Bearer at_v1_...
 6. Connect to websocketUrl and send {"type":"session.authenticate","token":"..."}.

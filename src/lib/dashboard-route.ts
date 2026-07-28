@@ -7,14 +7,13 @@ import {
   getTenantById,
   type Tenant,
 } from "@/lib/v1/auth"
-import {
-  beginIdempotentRequest,
-  bindIdempotentPayment,
-  completeIdempotentRequest,
-  requestHash,
-} from "@/lib/v1/idempotency"
 import { apiData, apiError, ApiError } from "@/lib/v1/http"
-import { prepareV1Payment, settleV1Payment } from "@/lib/v1/payment"
+import {
+  prepareV1Payment,
+  recordPaidResponse,
+  requestHash,
+  settleV1Payment,
+} from "@/lib/v1/payment"
 import type { ServiceCatalogEntry } from "@/lib/v1/service-catalog"
 
 export async function requireDashboardTenant(): Promise<Tenant> {
@@ -70,8 +69,6 @@ export async function dashboardPaid(
       }
     }
 
-    const key = request.headers.get("idempotency-key")?.trim()
-    if (!key) throw new ApiError("IDEMPOTENCY_REQUIRED", "Idempotency-Key is required", 400)
     const payment = await prepareV1Payment(
       request,
       service.endpoint,
@@ -87,11 +84,7 @@ export async function dashboardPaid(
     const hash = requestHash(body)
     let tenant: Tenant
     if (payment.kind === "settled") {
-      if (
-        payment.endpoint !== service.endpoint
-        || payment.idempotencyKey !== key
-        || payment.requestHash !== hash
-      ) {
+      if (payment.endpoint !== service.endpoint || payment.requestHash !== hash) {
         throw new ApiError("PAYMENT_REPLAY_CONFLICT", "Payment proof belongs to another request", 409)
       }
       tenant = existingTenant ?? await getTenantById(payment.tenantId)
@@ -102,21 +95,16 @@ export async function dashboardPaid(
       throw new ApiError("FORBIDDEN", "Payment belongs to another wallet", 403)
     }
 
-    const state = await beginIdempotentRequest(tenant.id, service.endpoint, key, hash)
-    if (state.kind === "conflict") {
-      throw new ApiError("IDEMPOTENCY_CONFLICT", "This key was used for another request", 409)
-    }
-    if (state.kind === "replay") {
-      return NextResponse.json(state.body, {
-        status: state.status,
+    // This payment proof already ran its operation; replay the stored result
+    // rather than charging the provider a second time.
+    if (payment.kind === "settled" && payment.responseStatus !== null) {
+      return NextResponse.json(payment.responseBody, {
+        status: payment.responseStatus,
         headers: {
-          ...(state.settlementHeader ? { "PAYMENT-RESPONSE": state.settlementHeader } : {}),
-          "x-idempotent-replay": "true",
+          ...(payment.settlementHeader ? { "PAYMENT-RESPONSE": payment.settlementHeader } : {}),
+          "x-payment-replay": "true",
         },
       })
-    }
-    if (state.kind === "in_progress") {
-      throw new ApiError("IDEMPOTENCY_IN_PROGRESS", "This operation is still processing", 409)
     }
 
     const settlement = payment.kind === "settled"
@@ -125,28 +113,16 @@ export async function dashboardPaid(
           payment,
           tenant,
           endpoint: service.endpoint,
-          idempotencyKey: key,
           requestHash: hash,
         })
-    await bindIdempotentPayment(
-      tenant.id,
-      service.endpoint,
-      key,
-      settlement.paymentPayloadHash,
-      settlement.settlementHeader,
-    )
 
     try {
       const result = await handler(tenant, body)
       const response = apiData(result.body, service.guide, result.status ?? 200)
-      await completeIdempotentRequest(
-        tenant.id,
-        service.endpoint,
-        key,
+      await recordPaidResponse(
+        settlement.paymentPayloadHash,
         response.status,
         await response.clone().json(),
-        settlement.paymentPayloadHash,
-        settlement.settlementHeader,
       )
       if (!session.tenantId) {
         await setDashboardSession({ tenantId: tenant.id, walletAddress: tenant.walletAddress })
@@ -155,14 +131,10 @@ export async function dashboardPaid(
       return response
     } catch (error) {
       const response = apiError(error, service.guide)
-      await completeIdempotentRequest(
-        tenant.id,
-        service.endpoint,
-        key,
+      await recordPaidResponse(
+        settlement.paymentPayloadHash,
         response.status,
         await response.clone().json(),
-        settlement.paymentPayloadHash,
-        settlement.settlementHeader,
       )
       response.headers.set("PAYMENT-RESPONSE", settlement.settlementHeader)
       return response
