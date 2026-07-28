@@ -259,11 +259,19 @@ test("marketplace registration is decoupled from pricing", () => {
     [...FREE_REGISTERED].sort(),
     "exactly these free services are registered",
   )
-  // The helper must not force registration off for free entries.
+  // The helper must not force registration off for free entries. Scoped to the
+  // body of free() so it does not trip over unrelated `registerOnOkx: false`
+  // entries in the catalog, and written without newline anchors so it behaves
+  // the same under CRLF and LF checkouts.
   const catalog = read("src/lib/v1/service-catalog.ts")
-  assert.doesNotMatch(catalog, /\n\s*registerOnOkx: false,\n\s*requiredInput:/,
+  const freeBody = catalog.slice(
+    catalog.indexOf("function free("),
+    catalog.indexOf("export const DISCOVERY_SERVICES"),
+  )
+  assert.ok(freeBody, "expected to find the free() helper")
+  assert.doesNotMatch(freeBody, /registerOnOkx: false/,
     "free() must not hardcode registerOnOkx: false")
-  assert.match(catalog, /registerOnOkx: options\.registerOnOkx \?\? false/)
+  assert.match(freeBody, /registerOnOkx: options\.registerOnOkx \?\? false/)
 })
 
 test("a registered free service never carries an x402 price", () => {
