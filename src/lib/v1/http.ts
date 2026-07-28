@@ -10,7 +10,6 @@ export type ApiErrorCode =
   | "PAYMENT_CONFIGURATION_ERROR"
   | "PROVIDER_CONFIGURATION_ERROR"
   | "PROVIDER_ERROR"
-  | "IDEMPOTENCY_CONFLICT"
 
 // Fields are declared explicitly rather than as constructor parameter properties
 // so this module loads under Node's type-stripping runtime used by the tests.

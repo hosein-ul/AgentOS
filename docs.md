@@ -68,7 +68,7 @@ There is no `/auth/token` charge.
 1. Send a start-here POST body without `Authorization`.
 2. Receive HTTP 402 and `PAYMENT-REQUIRED`.
 3. Use an OKX Agent Payments Protocol client to quote, present the payment for explicit approval, pay, and replay.
-4. Replay the identical method, URL, and JSON with `PAYMENT-SIGNATURE` and `Idempotency-Key`.
+4. Replay the identical method, URL, and JSON with `PAYMENT-SIGNATURE`.
 5. AgentOS verifies the payer, binds the proof to the request, settles once, performs the provider operation, then returns `data.authentication.accessToken`.
 6. Store the `at_v1_...` token. It has no automatic expiry.
 7. Reuse it for every AgentOS service owned by the same payer wallet. Each later paid endpoint still requires its own fixed payment.
@@ -81,12 +81,11 @@ Paid curl skeleton:
 curl -X POST "$AGENTOS_URL/api/v1/phone/call-1-minute" \
   -H "Authorization: Bearer $AGENTOS_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: call-2026-001" \
   -H "PAYMENT-SIGNATURE: $PAYMENT_SIGNATURE" \
   -d '{"phoneNumberId":"uuid","toNumber":"+14155550123"}'
 ```
 
-Never submit a second payment after an ambiguous response. Retry the identical request with the same proof and idempotency key.
+Never submit a second payment after an ambiguous response. Retry the identical request with the same proof; it settles once and replays the stored response.
 
 ## Canonical public service inventory
 
@@ -529,7 +528,7 @@ Provider setup:
 | `FORBIDDEN` / `RESOURCE_NOT_OWNED` | Use a resource owned by this wallet token |
 | `PAYMENT_REQUIRED` | Quote, confirm, pay, replay unchanged |
 | `PAYMENT_PENDING` | Poll/retry unchanged; do not pay twice |
-| `IDEMPOTENCY_CONFLICT` | Restore original body or use a new key for a new operation |
+| `PAYMENT_REPLAY_CONFLICT` | The proof paid for a different request; pay separately for a new operation |
 | `RESOURCE_NOT_FOUND` | Refresh owned resource IDs |
 | `PROVIDER_TEMPORARY_FAILURE` | Back off and retry the exact request/key/proof |
 | `ALLOWANCE_EXHAUSTED` | Buy inbound minutes |

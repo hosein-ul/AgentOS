@@ -115,7 +115,7 @@ flowchart LR
   V -->|"voice.turn over WSS"| G
 ```
 
-Postgres is the source of truth for tenants, token hashes, payment/idempotency
+Postgres is the source of truth for tenants, token hashes, payment
 ledgers, provider resources, events, entitlements, and jobs. WebSocket delivery
 never replaces durable persistence.
 
@@ -175,7 +175,7 @@ There is no paid token endpoint.
 
 1. A new wallet calls an available provisioning/start-here endpoint without `Authorization`.
 2. AgentOS returns a standard x402 challenge.
-3. The agent obtains explicit payment approval and replays the identical request with `PAYMENT-SIGNATURE` and `Idempotency-Key`.
+3. The agent obtains explicit payment approval and replays the identical request with `PAYMENT-SIGNATURE`.
 4. AgentOS verifies the payer and request binding, settles once, performs the real provider operation, and returns a one-time plaintext `at_v1_...` token.
 5. The token has no automatic expiry and authenticates every AgentOS resource owned by that wallet.
 
@@ -187,7 +187,7 @@ Isolation controls:
 - no trusted caller-supplied tenant ID;
 - tenant condition on every server resource query;
 - unique provider identifiers;
-- tenant-bound payment and idempotency ledgers;
+- a tenant-bound payment ledger;
 - RLS plus explicit grants/revokes;
 - short-lived separate realtime credentials;
 - encrypted callback/provider secrets.
@@ -311,7 +311,7 @@ Filenames match the versions production actually recorded, so a fresh database
 reproduces the production schema. See `docs.md` for the full migration notes.
 
 1. `20260715060100_init_agentmail.sql` — retained legacy AgentMail tables. Unused by v1, but migration 5 indexes two of them.
-2. `20260724105651_agentos_v1.sql` — tenants, token hashes, idempotency, payments, email, phone/domain bases.
+2. `20260724105651_agentos_v1.sql` — tenants, token hashes, payments, email, phone/domain bases.
 3. `20260724105706_agentphone_phone_lifecycle.sql` — AgentPhone IDs, entitlements, calls, jobs, initial events, atomic RPCs.
 4. `20260724105725_unified_durable_events.sql` — unified event states, leases, indexes, atomic claims, mailbox provider uniqueness, explicit legacy hardening.
 5. `20260724105855_foreign_key_indexes.sql` — additive covering indexes for legacy and v1 foreign keys flagged by Supabase advisors.
@@ -320,6 +320,7 @@ reproduces the production schema. See `docs.md` for the full migration notes.
 8. `20260727203201_live_voice_websocket.sql` — retires the customer webhook columns; EXPAND phase adding the seven-argument inbound-call reservation.
 9. `20260727203347_bootstrap_token_once.sql` — one-time bootstrap access-token claim, with backfill.
 10. `20260727203500_drop_legacy_reserve_inbound_call.sql` — CONTRACT phase. **Do not apply until the live-voice build is deployed**; the running application still calls the eight-argument overload.
+11. `20260728072000_remove_idempotency_key.sql` — drops `v1_idempotency_keys` and the `idempotency_key` column, and stores the paid response on `v1_payments` so a replayed payment proof does not re-run the operation.
 
 The connected `agentmail` Supabase project was upgraded from its legacy-only schema during this implementation. RLS is now enabled on all 21 public tables and `anon/authenticated` have no direct public-table grants. Security advisors report no ERROR/WARN findings; the remaining INFO notices are expected deny-all tables with RLS and no client policies. Performance advisors report only unused-index notices because the v1 tables have no workload yet.
 
@@ -394,9 +395,9 @@ The dashboard exposes real mailbox, message, AgentPhone, transcript, durable-eve
 
 `/admin/**` is the operator-only cross-tenant view and remains protected by HTTP Basic Auth. Neither dashboard nor admin routes are OKX.AI marketplace services.
 
-## Idempotency and payment reconciliation
+## Safe retries and payment reconciliation
 
-Paid operations require `Idempotency-Key`. Each record binds tenant, endpoint, request hash, payment proof, response, and settlement header. Replays return the stored response. Changed-body reuse is rejected. The payment ledger prevents proof reuse across operations.
+No idempotency header is required or accepted. The payment proof identifies a paid operation: each ledger row binds tenant, endpoint, request hash, proof, response, and settlement header. The proof settles at most once, replaying it returns the stored response, and reusing it for a changed body is rejected.
 
 `payment.completed` and `payment.failed` are internal normalized durable events. A settled payment that cannot be durably recorded is treated as an operational incident; clients must not pay again.
 
@@ -409,7 +410,7 @@ Paid operations require `Idempotency-Key`. Each record binds tenant, endpoint, r
 - SSRF-safe agent callback URLs;
 - RLS and explicit grants;
 - no trusted tenant IDs;
-- database uniqueness for provider/idempotency keys;
+- database uniqueness for provider keys and payment proofs;
 - no recordings;
 - wallet-owner dashboard, private operator admin, and agent bearer auth kept separate;
 - internal routes protected by `CRON_SECRET`.

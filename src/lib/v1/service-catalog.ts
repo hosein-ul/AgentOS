@@ -15,7 +15,6 @@ export type ServiceCatalogEntry = {
   startHere: boolean
   available: boolean
   registerOnOkx: boolean
-  idempotency: "required" | "recommended" | "not-applicable"
   requiredInput: Record<string, string>
   optionalInput: Record<string, string>
   output: string
@@ -25,7 +24,7 @@ export type ServiceCatalogEntry = {
 }
 
 function paid(
-  entry: Omit<ServiceCatalogEntry, "paid" | "x402Price" | "available" | "registerOnOkx" | "idempotency">,
+  entry: Omit<ServiceCatalogEntry, "paid" | "x402Price" | "available" | "registerOnOkx">,
 ): ServiceCatalogEntry & { paid: true; x402Price: string } {
   return {
     ...entry,
@@ -33,7 +32,6 @@ function paid(
     x402Price: `$${entry.amount}`,
     available: true,
     registerOnOkx: true,
-    idempotency: "required",
   }
 }
 
@@ -47,7 +45,7 @@ function paid(
  * for discovery, infrastructure and event-plumbing routes.
  */
 function free(
-  entry: Omit<ServiceCatalogEntry, "paid" | "x402Price" | "available" | "registerOnOkx" | "idempotency">,
+  entry: Omit<ServiceCatalogEntry, "paid" | "x402Price" | "available" | "registerOnOkx">,
   options: { registerOnOkx?: boolean } = {},
 ): ServiceCatalogEntry & { paid: false; x402Price: null } {
   return {
@@ -56,7 +54,6 @@ function free(
     x402Price: null,
     available: true,
     registerOnOkx: options.registerOnOkx ?? false,
-    idempotency: entry.method === "POST" ? "recommended" : "not-applicable",
   }
 }
 
@@ -499,7 +496,6 @@ export const DOMAIN_REGISTER_UNAVAILABLE: ServiceCatalogEntry = {
   startHere: false,
   available: false,
   registerOnOkx: false,
-  idempotency: "required",
   requiredInput: {},
   optionalInput: {},
   output: "HTTP 503; no payment is requested or settled",

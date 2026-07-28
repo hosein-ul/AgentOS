@@ -16,7 +16,7 @@ const responses = (success = "Operation completed") => ({
   "400": { description: "Invalid request" },
   "401": { description: "Bearer token missing or invalid" },
   "402": { description: "OKX x402 payment required", headers: { "PAYMENT-REQUIRED": { schema: { type: "string" } } } },
-  "409": { description: "Conflict or idempotency conflict" },
+  "409": { description: "Conflict; the payment proof is bound to a different request" },
   "428": { description: "ONBOARDING_REQUIRED; no payment was settled" },
   "502": { description: "Real provider operation failed" },
   "503": { description: "Required provider or infrastructure configuration unavailable" },
@@ -31,7 +31,6 @@ const paidPost = (
   summary,
   security: authenticated ? [{ bearerAuth: [] }] : [],
   parameters: [
-    { in: "header", name: "Idempotency-Key", required: true, schema: { type: "string", maxLength: 255 } },
     { in: "header", name: "PAYMENT-SIGNATURE", required: false, schema: { type: "string" }, description: "Absent on the challenge request; required on the paid replay." },
   ],
   requestBody,

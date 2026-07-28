@@ -105,7 +105,6 @@ test("each generated guide carries the full documented contract", async () => {
     assert.ok(guide.output, `${service.id} needs an output summary`)
     assert.ok(guide.exampleRequest.body !== undefined, `${service.id} needs an example request`)
     assert.ok(guide.documentation.docs && guide.documentation.openapi)
-    assert.ok(guide.idempotency.requirement)
     assert.equal(typeof guide.authentication.required, "boolean")
     // x402 instructions only where a payment genuinely applies.
     assert.equal(guide.payment.required, service.paid && service.available)
@@ -262,7 +261,7 @@ test("marketplace registration is decoupled from pricing", () => {
   )
   // The helper must not force registration off for free entries.
   const catalog = read("src/lib/v1/service-catalog.ts")
-  assert.doesNotMatch(catalog, /\n\s*registerOnOkx: false,\n\s*idempotency: entry\.method/,
+  assert.doesNotMatch(catalog, /\n\s*registerOnOkx: false,\n\s*requiredInput:/,
     "free() must not hardcode registerOnOkx: false")
   assert.match(catalog, /registerOnOkx: options\.registerOnOkx \?\? false/)
 })
@@ -271,7 +270,6 @@ test("a registered free service never carries an x402 price", () => {
   for (const service of SERVICE_CATALOG.filter((s) => s.registerOnOkx && !s.paid)) {
     assert.equal(service.x402Price, null, `${service.id} must not advertise a price`)
     assert.equal(service.amount, "0.00", service.id)
-    assert.equal(service.idempotency, service.method === "POST" ? "recommended" : "not-applicable", service.id)
   }
 })
 
