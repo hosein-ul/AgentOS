@@ -233,7 +233,9 @@ export async function settleV1Payment(input: {
     }).catch(() => undefined)
     throw new ApiError("payment_settlement_failed", "Payment processing failed", 502)
   }
-  if (!settlement.success || (settlement.status && settlement.status !== "success")) {
+  // OKX async settlement: status="pending" means the tx was submitted and will confirm
+  // on-chain. Only reject if success=false OR if the status is explicitly "timeout".
+  if (!settlement.success || settlement.status === "timeout") {
     throw new ApiError("payment_settlement_failed", "Payment did not settle", 502)
   }
   const settlementHeader = Buffer.from(JSON.stringify(settlement)).toString("base64")
