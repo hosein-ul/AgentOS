@@ -158,22 +158,15 @@ function paymentError(code: string, message: string, status = 402) {
   }
 }
 
-export async function prepareV1Payment(
-  request: NextRequest,
-  path: string,
-  price: string,
-  description: string,
-): Promise<Blocked | VerifiedPayment | PreviouslySettledPayment> {
-  let server: PaymentServer
-  try {
-    server = await paymentServer()
-  } catch (error) {
-    const message = error instanceof Error && error.message.includes("PAYMENT_WALLET")
-      ? "Payment service is unavailable because its receiving wallet is invalid. Contact the AgentOS operator."
-      : "Payment service is unavailable"
-    return paymentError("PAYMENT_CONFIGURATION_ERROR", message, 503)
-  }
+function paymentUnavailable(error: unknown): Blocked {
+  const message = error instanceof Error && error.message.includes("PAYMENT_WALLET")
+    ? "Payment service is unavailable because its receiving wallet is invalid. Contact the AgentOS operator."
+    : "Payment service is unavailable"
+  return paymentError("PAYMENT_CONFIGURATION_ERROR", message, 503)
+}
 
+async function challengeContext(path: string, price: string, description: string) {
+  const server = await paymentServer()
   const requirements = await server.buildPaymentRequirementsFromOptions([
     { scheme: "exact", network: "eip155:196", payTo: process.env.PAYMENT_WALLET!, price },
   ], null)
@@ -182,33 +175,84 @@ export async function prepareV1Payment(
     ...requirement,
     extra: { ...(requirement.extra ?? {}), outputSchema: { input } },
   }))
-  const resource = { url: `${appUrl()}${path}`, description, mimeType: "application/json" }
+  return {
+    server,
+    enriched,
+    resource: { url: `${appUrl()}${path}`, description, mimeType: "application/json" },
+  }
+}
+
+async function challengeResponse(
+  context: Awaited<ReturnType<typeof challengeContext>>,
+  path: string,
+): Promise<Blocked> {
+  const required = await context.server.createPaymentRequiredResponse(
+    context.enriched,
+    context.resource,
+    "Payment required",
+  )
+  const service = getServiceByEndpoint(path)
+  return {
+    kind: "blocked",
+    response: NextResponse.json({
+      ...required,
+      agentos: {
+        serviceId: service?.id ?? null,
+        fixedPrice: service ? { amount: service.amount, currency: service.currency } : null,
+        startHere: service?.startHere ?? false,
+        // Declared in the challenge so a caller learns the access-token
+        // requirement before signing, rather than after.
+        requiresAccessToken: service ? !service.startHere : false,
+        accessTokenNote: service?.startHere
+          ? "Callable without a bearer token. The first successful paid provisioning for a wallet returns the permanent AgentOS access token exactly once."
+          : "Send the AgentOS access token as a bearer token. Obtain it from the first paid provisioning call.",
+        guides: {
+          docs: service?.guide ?? "/docs#authentication-and-okx-x402",
+          llms: "/llms.txt",
+          serviceCatalog: "/api/v1/services",
+          openapi: "/openapi.json",
+        },
+      },
+    }, {
+      status: 402,
+      headers: { "PAYMENT-REQUIRED": Buffer.from(JSON.stringify(required)).toString("base64") },
+    }),
+  }
+}
+
+/**
+ * The x402 discovery challenge for an unpaid request. It quotes the price and
+ * declares the request parameters; it creates no payment, reads no ledger and
+ * verifies nothing, so it is safe to answer before ownership is established.
+ */
+export async function v1PaymentChallenge(
+  path: string,
+  price: string,
+  description: string,
+): Promise<Blocked> {
+  try {
+    return await challengeResponse(await challengeContext(path, price, description), path)
+  } catch (error) {
+    return paymentUnavailable(error)
+  }
+}
+
+export async function prepareV1Payment(
+  request: NextRequest,
+  path: string,
+  price: string,
+  description: string,
+): Promise<Blocked | VerifiedPayment | PreviouslySettledPayment> {
+  let context: Awaited<ReturnType<typeof challengeContext>>
+  try {
+    context = await challengeContext(path, price, description)
+  } catch (error) {
+    return paymentUnavailable(error)
+  }
+  const { server, enriched } = context
   const decoded = decodePayment(request)
 
-  if (!decoded) {
-    const required = await server.createPaymentRequiredResponse(enriched, resource, "Payment required")
-    const service = getServiceByEndpoint(path)
-    return {
-      kind: "blocked",
-      response: NextResponse.json({
-        ...required,
-        agentos: {
-          serviceId: service?.id ?? null,
-          fixedPrice: service ? { amount: service.amount, currency: service.currency } : null,
-          startHere: service?.startHere ?? false,
-          guides: {
-            docs: service?.guide ?? "/docs#authentication-and-okx-x402",
-            llms: "/llms.txt",
-            serviceCatalog: "/api/v1/services",
-            openapi: "/openapi.json",
-          },
-        },
-      }, {
-        status: 402,
-        headers: { "PAYMENT-REQUIRED": Buffer.from(JSON.stringify(required)).toString("base64") },
-      }),
-    }
-  }
+  if (!decoded) return challengeResponse(context, path)
 
   const db = requireServerSupabase()
   const { data: existing, error: existingError } = await db

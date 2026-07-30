@@ -11,7 +11,7 @@ import {
   type Tenant,
 } from "./auth"
 import { ApiError, apiData, apiError, readBoundedText, readJson } from "./http"
-import { prepareV1Payment, recordPaidResponse, requestHash, settleV1Payment } from "./payment"
+import { prepareV1Payment, recordPaidResponse, requestHash, settleV1Payment, v1PaymentChallenge } from "./payment"
 import { getServiceByEndpoint, getServiceById, SERVICE_CATALOG } from "./service-catalog"
 
 export const guide = "/docs#api-contract"
@@ -285,6 +285,16 @@ export async function v1Paid(
       )
     }
     const startHere = service?.startHere === true
+
+    // In x402 the challenge is the discovery mechanism: it declares the price,
+    // the parameters and whether an access token is needed. So an unpaid request
+    // always receives it, before any onboarding or parameter check. Those checks
+    // still run on the paid path below, ahead of settlement, so a caller can
+    // never be charged for a request that would have been rejected.
+    if (!request.headers.get("payment-signature")) {
+      return (await v1PaymentChallenge(endpoint, price, description)).response
+    }
+
     if (!bearer && !startHere) return onboardingRequired(endpoint)
     const body = await readPaidBody(request, endpoint)
     preflightCatalogInput(endpoint, body)
