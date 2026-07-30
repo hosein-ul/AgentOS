@@ -10,7 +10,7 @@ import {
   requireTenant,
   type Tenant,
 } from "./auth"
-import { ApiError, apiData, apiError, readJson } from "./http"
+import { ApiError, apiData, apiError, readBoundedText, readJson } from "./http"
 import { prepareV1Payment, recordPaidResponse, requestHash, settleV1Payment } from "./payment"
 import { getServiceByEndpoint, getServiceById, SERVICE_CATALOG } from "./service-catalog"
 
@@ -206,6 +206,59 @@ export async function v1Action(
   }
 }
 
+// OKX A2MCP paid replays may arrive with the body encoded differently from a
+// direct agent-to-endpoint call. Try standard JSON first, then fall back to
+// base64-decoded JSON (OKX carrier format) and URL-encoded form data, and
+// finally query-string parameters — so the paid path is robust to all shapes
+// OKX's gateway uses when relaying a request to the merchant endpoint.
+async function readPaidBody(request: NextRequest): Promise<Record<string, unknown>> {
+  const raw = await readBoundedText(request)
+  const trimmed = raw.trim()
+
+  if (trimmed) {
+    // 1. Standard JSON
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch { /* try alternate formats */ }
+
+    // 2. Base64-encoded JSON — OKX carrier-wrapped format
+    try {
+      const decoded = Buffer.from(trimmed, "base64").toString("utf8")
+      const parsed = JSON.parse(decoded)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // If the decoded object looks like an OKX payment-requirements envelope,
+        // extract the original request body from extra.outputSchema.input.body
+        const rec = parsed as Record<string, unknown>
+        const outputSchema = (rec.extra as Record<string, unknown> | undefined)?.outputSchema
+          ?? (rec as Record<string, unknown>).outputSchema
+        const input = (outputSchema as Record<string, unknown> | undefined)?.input
+        if (input && typeof input === "object" && !Array.isArray(input)) {
+          const body = (input as Record<string, unknown>).body
+          if (body && typeof body === "object" && !Array.isArray(body)) {
+            return body as Record<string, unknown>
+          }
+        }
+        return rec
+      }
+    } catch { /* fall through */ }
+
+    // 3. URL-encoded form data (e.g. localPart=myagent)
+    try {
+      const params = Object.fromEntries(new URLSearchParams(trimmed).entries())
+      if (Object.keys(params).length > 0) return params
+    } catch { /* fall through */ }
+  }
+
+  // 4. Empty body — params may arrive in the query string
+  const qs = Object.fromEntries(new URL(request.url).searchParams.entries())
+  if (Object.keys(qs).length > 0) return qs
+
+  throw new ApiError("invalid_request", "Request body must be valid JSON")
+}
+
 export async function v1Paid(
   request: NextRequest,
   endpoint: string,
@@ -225,7 +278,7 @@ export async function v1Paid(
     }
     const startHere = service?.startHere === true
     if (!bearer && !startHere) return onboardingRequired(endpoint)
-    const body = await readJson(request)
+    const body = await readPaidBody(request)
     preflightCatalogInput(endpoint, body)
     const bootstrap = !bearer && startHere
     const existingTenant = bootstrap ? null : await requireTenant(request)
