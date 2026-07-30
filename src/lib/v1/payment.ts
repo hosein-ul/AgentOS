@@ -11,11 +11,60 @@ import { ApiError } from "./http"
 import { createDurableEvent } from "./events"
 import { getServiceByEndpoint } from "./service-catalog"
 
+type JsonSchemaProperty = {
+  type: "string" | "boolean" | "integer" | "array"
+  description: string
+  items?: { type: "string" }
+}
+
+type BodyJsonSchema = {
+  type: "object"
+  properties: Record<string, JsonSchemaProperty>
+  required: string[]
+}
+
 type InputSchema = {
   type: "http"
   method: "POST"
   bodyType: "json"
-  body: unknown
+  body: BodyJsonSchema
+}
+
+/**
+ * Infer a JSON Schema property from a catalog field description. The catalog
+ * stores human descriptions rather than types, and these keywords are the
+ * consistent markers it uses for the non-string fields.
+ */
+function schemaProperty(description: string): JsonSchemaProperty {
+  if (/array/i.test(description)) return { type: "array", description, items: { type: "string" } }
+  if (/^boolean\b/i.test(description) || /^must be (true|false)$/i.test(description)) {
+    return { type: "boolean", description }
+  }
+  if (/^\d+-\d+$/.test(description.trim())) return { type: "integer", description }
+  return { type: "string", description }
+}
+
+/**
+ * The x402 `outputSchema.input.body` must be a JSON Schema describing the
+ * parameters the paid replay has to carry — the buyer's client reads
+ * `properties` / `required` to build that replay body. Echoing a literal example
+ * body here leaves the client with no declared parameters, so it replays with an
+ * empty body and the merchant rejects the request before settlement.
+ */
+function bodySchema(path: string): BodyJsonSchema {
+  const service = getServiceByEndpoint(path)
+  const properties: Record<string, JsonSchemaProperty> = {}
+  for (const [field, description] of Object.entries(service?.requiredInput ?? {})) {
+    properties[field] = schemaProperty(description)
+  }
+  for (const [field, description] of Object.entries(service?.optionalInput ?? {})) {
+    properties[field] = schemaProperty(description)
+  }
+  return {
+    type: "object",
+    properties,
+    required: Object.keys(service?.requiredInput ?? {}),
+  }
 }
 
 type PaymentServer = InstanceType<typeof x402ResourceServer>
@@ -114,7 +163,6 @@ export async function prepareV1Payment(
   path: string,
   price: string,
   description: string,
-  body: unknown
 ): Promise<Blocked | VerifiedPayment | PreviouslySettledPayment> {
   let server: PaymentServer
   try {
@@ -129,7 +177,7 @@ export async function prepareV1Payment(
   const requirements = await server.buildPaymentRequirementsFromOptions([
     { scheme: "exact", network: "eip155:196", payTo: process.env.PAYMENT_WALLET!, price },
   ], null)
-  const input: InputSchema = { type: "http", method: "POST", bodyType: "json", body }
+  const input: InputSchema = { type: "http", method: "POST", bodyType: "json", body: bodySchema(path) }
   const enriched = requirements.map((requirement) => ({
     ...requirement,
     extra: { ...(requirement.extra ?? {}), outputSchema: { input } },

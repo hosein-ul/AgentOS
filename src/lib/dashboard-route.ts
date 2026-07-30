@@ -74,7 +74,6 @@ export async function dashboardPaid(
       service.endpoint,
       service.x402Price,
       service.description,
-      body,
     )
     if (payment.kind === "blocked") return payment.response
     if (payment.payer.toLowerCase() !== session.walletAddress) {

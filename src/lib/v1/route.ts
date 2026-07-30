@@ -211,7 +211,7 @@ export async function v1Action(
 // base64-decoded JSON (OKX carrier format) and URL-encoded form data, and
 // finally query-string parameters — so the paid path is robust to all shapes
 // OKX's gateway uses when relaying a request to the merchant endpoint.
-async function readPaidBody(request: NextRequest): Promise<Record<string, unknown>> {
+async function readPaidBody(request: NextRequest, endpoint: string): Promise<Record<string, unknown>> {
   const raw = await readBoundedText(request)
   const trimmed = raw.trim()
 
@@ -256,7 +256,15 @@ async function readPaidBody(request: NextRequest): Promise<Record<string, unknow
   const qs = Object.fromEntries(new URL(request.url).searchParams.entries())
   if (Object.keys(qs).length > 0) return qs
 
-  throw new ApiError("invalid_request", "Request body must be valid JSON")
+  // Nothing usable arrived. Name the parameters this operation declares so the
+  // caller can see what the request was missing rather than a bare parse error.
+  const required = Object.keys(getServiceByEndpoint(endpoint)?.requiredInput ?? {})
+  throw new ApiError(
+    "invalid_request",
+    required.length
+      ? `Request body is empty or unparseable. This operation requires a JSON body containing: ${required.join(", ")}`
+      : "Request body must be valid JSON",
+  )
 }
 
 export async function v1Paid(
@@ -278,12 +286,12 @@ export async function v1Paid(
     }
     const startHere = service?.startHere === true
     if (!bearer && !startHere) return onboardingRequired(endpoint)
-    const body = await readPaidBody(request)
+    const body = await readPaidBody(request, endpoint)
     preflightCatalogInput(endpoint, body)
     const bootstrap = !bearer && startHere
     const existingTenant = bootstrap ? null : await requireTenant(request)
     if (existingTenant) await preflightOwnedResource(existingTenant, endpoint, body)
-    const payment = await prepareV1Payment(request, endpoint, price, description, body)
+    const payment = await prepareV1Payment(request, endpoint, price, description)
     if (payment.kind === "blocked") return payment.response
 
     const bodyHash = requestHash(body)
