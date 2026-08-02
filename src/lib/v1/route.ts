@@ -117,7 +117,7 @@ async function preflightOwnedResource(
   if (!data) {
     throw new ApiError(
       "RESOURCE_NOT_OWNED",
-      "The requested resource does not exist or is not owned by this access token",
+      "The requested resource does not exist or is not owned by this wallet or access token",
       404,
     )
   }
@@ -312,8 +312,7 @@ export async function v1Paid(
     const tenantFromBearer = bearer ? await requireTenant(request) : null
     const payment = await prepareV1Payment(request, endpoint, price, description)
     if (payment.kind === "blocked") return payment.response
-    const payerWallet = payment.kind === "settled" ? payment.payer : payment.payer
-    const tenantFromWallet = tenantFromBearer ? null : await findTenantByWallet(payerWallet)
+    const tenantFromWallet = tenantFromBearer ? null : await findTenantByWallet(payment.payer)
     const existingTenant = tenantFromBearer ?? tenantFromWallet
     const bootstrap = !existingTenant && startHere
     if (!existingTenant && !startHere) return onboardingRequired(endpoint)

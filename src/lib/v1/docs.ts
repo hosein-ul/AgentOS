@@ -42,7 +42,7 @@ An unused wallet can bootstrap only through an available provisioning service:
 - Phone Canada: phone.number.ca.30d at POST /api/v1/phone/purchase-canada-number-30-days.
 - Domain: domain.register is intentionally unavailable and never requests payment.
 
-A secondary paid endpoint without an AgentOS token returns HTTP 428 ONBOARDING_REQUIRED before a payment challenge or settlement. Its JSON includes the correct service ID, method, endpoint, fixed price, required input, /llms.txt, /api/v1/services, /openapi.json, and the service guide.
+A secondary paid endpoint identifies its tenant from three signals, in order: (1) a bearer AgentOS access token, (2) the x402-verified payer wallet, once that wallet already has an AgentOS tenant from a prior paid provisioning, and (3) a brand-new wallet paying a startHere service. Only a request that matches none of these — no bearer, unknown payer wallet, non-startHere endpoint — returns HTTP 428 ONBOARDING_REQUIRED, before any payment challenge or settlement. Its JSON includes the correct service ID, method, endpoint, fixed price, required input, /llms.txt, /api/v1/services, /openapi.json, and the service guide.
 
 ## Authentication and OKX x402
 
@@ -56,7 +56,7 @@ There is no paid token endpoint.
 6. Store the at_v1 token. It has no automatic expiry and belongs to the payer wallet tenant.
 7. Reuse the same token across Email, Phone, Events, and future Domain services. Every later paid service still has its own fixed x402 charge.
 
-The x402 payer of a secondary request must equal the wallet bound to the bearer token. A missing token returns ONBOARDING_REQUIRED, an invalid/revoked token returns AUTH_REQUIRED, and a valid token cannot access another tenant's resource. Resource ownership preflight occurs before payment preparation where an input ID identifies a mailbox, phone number, or call.
+When a bearer token is present, the x402 payer of a secondary request must equal the wallet bound to that token. When no bearer is present, the request is authenticated by the x402 payer wallet itself and the tenant is resolved from it; an unknown wallet on a non-startHere endpoint returns ONBOARDING_REQUIRED, an invalid/revoked bearer returns AUTH_REQUIRED, and a valid bearer cannot access another tenant's resource. Resource ownership preflight occurs before payment settlement wherever an input ID identifies a mailbox, phone number, or call.
 
 No idempotency header is required or accepted. The payment proof is the identity of a paid operation: it is bound to the endpoint and the request body, it settles at most once, and replaying it returns the stored response instead of repeating the operation.
 
@@ -383,7 +383,7 @@ Vercel Pro is required only if Vercel itself must invoke cron more than daily. I
 
 ## Errors and recovery
 
-- ONBOARDING_REQUIRED: call the returned startHere endpoint; do not pay the failed secondary request.
+- ONBOARDING_REQUIRED: this wallet has no AgentOS tenant yet. Pay the returned startHere endpoint from this same wallet; the tenant is created there and subsequent paid calls on the same wallet are recognized automatically (no bearer needed).
 - AUTH_REQUIRED: provide a valid at_v1 token or start with provisioning.
 - INVALID_TOKEN: obtain/use the correct non-revoked token.
 - FORBIDDEN / RESOURCE_NOT_OWNED: never substitute a tenant ID; use a resource owned by this token.
@@ -422,7 +422,7 @@ AgentOS is a wallet-isolated REST ASP for autonomous agents on OKX.AI. It provid
 - Phone starts with phone.number.us.30d or phone.number.ca.30d.
 - Domain registration is unavailable; do not send payment.
 - A first provisioning call uses x402 and returns authentication.accessToken after real fulfillment.
-- Every secondary endpoint requires that credential. Missing credentials return HTTP 428 ONBOARDING_REQUIRED before payment settlement.
+- Every secondary endpoint can be reached in two ways: send that bearer credential, or simply pay from the same wallet — AgentOS resolves the tenant from the x402-verified payer wallet, so the OKX buyer flow (which cannot attach custom headers) still works end to end. Only a request from a wallet that has never provisioned anything, and no bearer, returns HTTP 428 ONBOARDING_REQUIRED before any payment settlement.
 
 ## Authentication
 

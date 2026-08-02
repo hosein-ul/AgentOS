@@ -192,6 +192,27 @@ test("the payer wallet must match the access-token tenant", () => {
   assert.match(route, /assertPaymentTenant\(existingTenant, payment\.payer\)/)
 })
 
+test("wallet-based tenant lookup only recognises pre-existing tenants", () => {
+  // The OKX buyer flow cannot attach a bearer, so v1Paid falls back to the
+  // verified x402 payer wallet. That fallback MUST only find pre-existing
+  // tenants (findTenantByWallet returns null for unknown wallets); a
+  // brand-new wallet on a non-startHere endpoint must still hit
+  // ONBOARDING_REQUIRED, and settlement must not run for it.
+  const auth = read("src/lib/v1/auth.ts")
+  assert.match(auth, /export async function findTenantByWallet/)
+  // The wallet lookup only reads; it never inserts.
+  const fn = auth.slice(auth.indexOf("findTenantByWallet"))
+  const body = fn.slice(0, fn.indexOf("\nexport"))
+  assert.ok(!/\.insert\(/.test(body), "wallet lookup must not create tenants")
+  assert.ok(!/\.upsert\(/.test(body), "wallet lookup must not upsert tenants")
+  const route = read("src/lib/v1/route.ts")
+  assert.match(route, /findTenantByWallet\(payment\.payer\)/)
+  // bearer wins over wallet fallback: don't run wallet lookup when bearer
+  // resolved a tenant (avoids masking a bad bearer with a wallet match).
+  assert.match(route, /tenantFromBearer \? null : await findTenantByWallet/)
+  assert.match(route, /!existingTenant && !startHere.*onboardingRequired/s)
+})
+
 test("resource ownership is checked before payment is settled", () => {
   const route = read("src/lib/v1/route.ts")
   const ownership = route.indexOf("preflightOwnedResource(existingTenant")
