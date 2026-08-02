@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
-import { x402ResourceServer } from "@okxweb3/x402-core/server"
+import { x402ResourceServer, x402HTTPResourceServer } from "@okxweb3/x402-core/server"
 import { OKXFacilitatorClient } from "@okxweb3/x402-core"
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server"
 import type { PaymentPayload, PaymentRequirements } from "@okxweb3/x402-core/types"
+import type { RoutesConfig } from "@okxweb3/x402-core/server"
 import { requireServerSupabase } from "@/lib/supabase"
 import type { Tenant } from "./auth"
 import { appUrl, isSafeProductionUrl, requireProductionConfig } from "./config"
 import { ApiError } from "./http"
 import { createDurableEvent } from "./events"
-import { getServiceByEndpoint } from "./service-catalog"
+import { getServiceByEndpoint, SERVICE_CATALOG, type ServiceCatalogEntry } from "./service-catalog"
+import { NextRequestAdapter } from "./okx-adapter"
 
 type JsonSchemaProperty = {
   type: "string" | "boolean" | "integer" | "array"
@@ -47,31 +49,36 @@ function schemaProperty(description: string): JsonSchemaProperty {
 /**
  * The x402 `outputSchema.input.body` must be a JSON Schema describing the
  * parameters the paid replay has to carry — the buyer's client reads
- * `properties` / `required` to build that replay body. Echoing a literal example
- * body here leaves the client with no declared parameters, so it replays with an
- * empty body and the merchant rejects the request before settlement.
+ * `properties` / `required` to build that replay body.
  */
-function bodySchema(path: string): BodyJsonSchema {
-  const service = getServiceByEndpoint(path)
+function bodySchemaForService(service: ServiceCatalogEntry): BodyJsonSchema {
   const properties: Record<string, JsonSchemaProperty> = {}
-  for (const [field, description] of Object.entries(service?.requiredInput ?? {})) {
+  for (const [field, description] of Object.entries(service.requiredInput ?? {})) {
     properties[field] = schemaProperty(description)
   }
-  for (const [field, description] of Object.entries(service?.optionalInput ?? {})) {
+  for (const [field, description] of Object.entries(service.optionalInput ?? {})) {
     properties[field] = schemaProperty(description)
   }
   return {
     type: "object",
     properties,
-    required: Object.keys(service?.requiredInput ?? {}),
+    required: Object.keys(service.requiredInput ?? {}),
   }
 }
 
+function bodySchema(path: string): BodyJsonSchema {
+  const service = getServiceByEndpoint(path)
+  if (!service) return { type: "object", properties: {}, required: [] }
+  return bodySchemaForService(service)
+}
+
 type PaymentServer = InstanceType<typeof x402ResourceServer>
+type HTTPServer = InstanceType<typeof x402HTTPResourceServer>
 type Blocked = { kind: "blocked"; response: NextResponse }
 export type VerifiedPayment = {
   kind: "verified"
   server: PaymentServer
+  http: HTTPServer
   payload: PaymentPayload
   matched: PaymentRequirements
   payer: string
@@ -86,23 +93,54 @@ export type PreviouslySettledPayment = {
   settlementHeader: string
   endpoint: string | null
   requestHash: string | null
-  // Set once the paid operation finished. Replaying the same payment proof
-  // returns this stored response instead of running the provider call again,
-  // which is what keeps a network retry from provisioning a second resource.
   responseStatus: number | null
   responseBody: unknown
 }
 
-/**
- * Stable hash of the request body. It binds a payment proof to the exact
- * request it paid for, so the same proof cannot be redirected at a different
- * body. This is payment-proof integrity, not idempotency bookkeeping.
- */
 export function requestHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
-let initialized: Promise<PaymentServer> | null = null
+/**
+ * Build the official-SDK route table from the AgentOS service catalog. Each
+ * paid endpoint is registered under both GET and POST so `x402HTTPResourceServer`
+ * answers a discovery probe (GET) with the same 402 challenge as the real
+ * payment call (POST) — buyer-agent clients probe GET first.
+ */
+function buildRoutes(): RoutesConfig {
+  const routes: Record<string, {
+    accepts: Array<{ scheme: string; network: string; payTo: string; price: string; extra?: Record<string, unknown> }>
+    description: string
+    mimeType: string
+    resource: string
+  }> = {}
+  for (const service of SERVICE_CATALOG) {
+    if (!service.paid || !service.x402Price) continue
+    const path = service.endpoint
+    const accepts = [{
+      scheme: "exact",
+      network: "eip155:196",
+      payTo: process.env.PAYMENT_WALLET!,
+      price: service.x402Price,
+      extra: {
+        outputSchema: {
+          input: { type: "http", method: "POST", bodyType: "json", body: bodySchemaForService(service) } as InputSchema,
+        },
+      },
+    }]
+    const config = {
+      accepts,
+      description: service.description,
+      mimeType: "application/json",
+      resource: `${appUrl()}${path}`,
+    }
+    routes[`GET ${path}`] = config
+    routes[`POST ${path}`] = config
+  }
+  return routes as unknown as RoutesConfig
+}
+
+let initialized: Promise<{ server: PaymentServer; http: HTTPServer }> | null = null
 
 async function paymentServer() {
   if (!initialized) {
@@ -122,8 +160,9 @@ async function paymentServer() {
       const facilitator = new OKXFacilitatorClient({ apiKey, secretKey, passphrase })
       const server = new x402ResourceServer(facilitator)
       server.register("eip155:196", new ExactEvmScheme())
-      await server.initialize()
-      return server
+      const http = new x402HTTPResourceServer(server, buildRoutes())
+      await http.initialize()
+      return { server, http }
     })()
   }
   return initialized
@@ -165,76 +204,74 @@ function paymentUnavailable(error: unknown): Blocked {
   return paymentError("PAYMENT_CONFIGURATION_ERROR", message, 503)
 }
 
-async function challengeContext(path: string, price: string, description: string) {
-  const server = await paymentServer()
-  const requirements = await server.buildPaymentRequirementsFromOptions([
-    { scheme: "exact", network: "eip155:196", payTo: process.env.PAYMENT_WALLET!, price },
-  ], null)
-  const input: InputSchema = { type: "http", method: "POST", bodyType: "json", body: bodySchema(path) }
-  const enriched = requirements.map((requirement) => ({
-    ...requirement,
-    extra: { ...(requirement.extra ?? {}), outputSchema: { input } },
-  }))
-  return {
-    server,
-    enriched,
-    resource: { url: `${appUrl()}${path}`, description, mimeType: "application/json" },
-  }
-}
-
-async function challengeResponse(
-  context: Awaited<ReturnType<typeof challengeContext>>,
-  path: string,
-): Promise<Blocked> {
-  const required = await context.server.createPaymentRequiredResponse(
-    context.enriched,
-    context.resource,
-    "Payment required",
-  )
+function agentosBlock(path: string) {
   const service = getServiceByEndpoint(path)
   return {
-    kind: "blocked",
-    response: NextResponse.json({
-      ...required,
-      agentos: {
-        serviceId: service?.id ?? null,
-        fixedPrice: service ? { amount: service.amount, currency: service.currency } : null,
-        startHere: service?.startHere ?? false,
-        // Declared in the challenge so a caller learns the access-token
-        // requirement before signing, rather than after.
-        requiresAccessToken: service ? !service.startHere : false,
-        accessTokenNote: service?.startHere
-          ? "Callable without a bearer token. The first successful paid provisioning for a wallet returns the permanent AgentOS access token exactly once."
-          : "Send the AgentOS access token as a bearer token. Obtain it from the first paid provisioning call.",
-        guides: {
-          docs: service?.guide ?? "/docs#authentication-and-okx-x402",
-          llms: "/llms.txt",
-          serviceCatalog: "/api/v1/services",
-          openapi: "/openapi.json",
-        },
-      },
-    }, {
-      status: 402,
-      headers: { "PAYMENT-REQUIRED": Buffer.from(JSON.stringify(required)).toString("base64") },
-    }),
+    serviceId: service?.id ?? null,
+    fixedPrice: service ? { amount: service.amount, currency: service.currency } : null,
+    startHere: service?.startHere ?? false,
+    requiresAccessToken: service ? !service.startHere : false,
+    accessTokenNote: service?.startHere
+      ? "Callable without a bearer token. The first successful paid provisioning for a wallet returns the permanent AgentOS access token exactly once."
+      : "Send the AgentOS access token as a bearer token. Obtain it from the first paid provisioning call.",
+    guides: {
+      docs: service?.guide ?? "/docs#authentication-and-okx-x402",
+      llms: "/llms.txt",
+      serviceCatalog: "/api/v1/services",
+      openapi: "/openapi.json",
+    },
   }
 }
 
 /**
- * The x402 discovery challenge for an unpaid request. It quotes the price and
- * declares the request parameters; it creates no payment, reads no ledger and
- * verifies nothing, so it is safe to answer before ownership is established.
+ * Build a NextResponse from the SDK's ProcessResult, adding the AgentOS
+ * `agentos` metadata block into the JSON body. The SDK response is the
+ * source of truth for status, PAYMENT-REQUIRED and content-type — we
+ * only enrich the JSON body.
+ */
+function sdkResponse(result: { status: number; headers: Record<string, string>; body?: unknown; isHtml?: boolean }, path: string): NextResponse {
+  if (result.isHtml || result.headers["Content-Type"] === "text/html") {
+    return new NextResponse(String(result.body), { status: result.status, headers: result.headers })
+  }
+  const body = (result.body && typeof result.body === "object" && !Array.isArray(result.body))
+    ? { ...(result.body as Record<string, unknown>), agentos: agentosBlock(path) }
+    : { body: result.body, agentos: agentosBlock(path) }
+  return NextResponse.json(body, { status: result.status, headers: result.headers })
+}
+
+/**
+ * The x402 discovery challenge for an unpaid request, produced by the
+ * official OKX `x402HTTPResourceServer`. It answers a GET or POST probe on
+ * a registered paid endpoint with the SDK-built 402 payload — including
+ * `PAYMENT-REQUIRED` header, `accepts[]`, and the `outputSchema` JSON
+ * Schema — and appends the AgentOS metadata block.
  */
 export async function v1PaymentChallenge(
   path: string,
-  price: string,
-  description: string,
+  _price: string,
+  _description: string,
+  method: "GET" | "POST" = "POST",
 ): Promise<Blocked> {
+  let http: HTTPServer
   try {
-    return await challengeResponse(await challengeContext(path, price, description), path)
+    ({ http } = await paymentServer())
   } catch (error) {
     return paymentUnavailable(error)
   }
+  const stubUrl = `${appUrl()}${path}`
+  const stubRequest = new Request(stubUrl, { method, headers: { accept: "application/json" } }) as unknown as NextRequest
+  const context = {
+    adapter: new NextRequestAdapter(stubRequest, path),
+    path,
+    method,
+    paymentHeader: undefined,
+  }
+  const result = await http.processHTTPRequest(context)
+  if (result.type === "payment-error") {
+    return { kind: "blocked", response: sdkResponse(result.response, path) }
+  }
+  // A registered paid route must always answer an unpaid probe with 402.
+  return paymentError("PAYMENT_CONFIGURATION_ERROR", "Payment challenge unavailable", 503)
 }
 
 export async function prepareV1Payment(
@@ -243,17 +280,17 @@ export async function prepareV1Payment(
   price: string,
   description: string,
 ): Promise<Blocked | VerifiedPayment | PreviouslySettledPayment> {
-  let context: Awaited<ReturnType<typeof challengeContext>>
+  let server: PaymentServer
+  let http: HTTPServer
   try {
-    context = await challengeContext(path, price, description)
+    ({ server, http } = await paymentServer())
   } catch (error) {
     return paymentUnavailable(error)
   }
-  const { server, enriched } = context
   const decoded = decodePayment(request)
+  if (!decoded) return v1PaymentChallenge(path, price, description, request.method === "GET" ? "GET" : "POST")
 
-  if (!decoded) return challengeResponse(context, path)
-
+  // Replay ledger — the SDK verifies signatures but does not track prior use.
   const db = requireServerSupabase()
   const { data: existing, error: existingError } = await db
     .from("v1_payments")
@@ -275,24 +312,33 @@ export async function prepareV1Payment(
     }
   }
 
-  const matched = server.findMatchingRequirements(enriched, decoded.payload)
-  if (!matched) return paymentError("INVALID_PAYMENT", "Payment does not match this request")
-  try {
-    const verification = await server.verifyPayment(decoded.payload, matched)
-    if (!verification.isValid || !verification.payer) {
-      return paymentError("INVALID_PAYMENT", "Payment verification failed")
-    }
-    return {
-      kind: "verified",
-      server,
-      payload: decoded.payload,
-      matched,
-      payer: verification.payer,
-      paymentPayloadHash: decoded.hash,
-      price,
-    }
-  } catch {
+  // Verify through the SDK's HTTP-layer entry point — same code path the
+  // Express middleware uses. Route matching, requirements building,
+  // requirements matching and signature verification all live here.
+  const context = {
+    adapter: new NextRequestAdapter(request, path),
+    path,
+    method: "POST",
+    paymentHeader: request.headers.get("payment-signature") ?? undefined,
+  }
+  const result = await http.processHTTPRequest(context)
+  if (result.type === "payment-error") {
+    return { kind: "blocked", response: sdkResponse(result.response, path) }
+  }
+  if (result.type !== "payment-verified") {
     return paymentError("INVALID_PAYMENT", "Payment verification failed")
+  }
+  const verification = await server.verifyPayment(result.paymentPayload, result.paymentRequirements)
+  if (!verification.payer) return paymentError("INVALID_PAYMENT", "Payment verification failed")
+  return {
+    kind: "verified",
+    server,
+    http,
+    payload: result.paymentPayload,
+    matched: result.paymentRequirements,
+    payer: verification.payer,
+    paymentPayloadHash: decoded.hash,
+    price,
   }
 }
 
@@ -303,9 +349,18 @@ export async function settleV1Payment(input: {
   requestHash: string
 }) {
   const serviceId = getServiceByEndpoint(input.endpoint)?.id ?? input.endpoint
-  let settlement: Awaited<ReturnType<PaymentServer["settlePayment"]>>
+  // Settle through the SDK's HTTP layer — same processSettlement the Express
+  // middleware calls. `responseBody` is the merchant response we're about to
+  // return; the SDK reserves it for extension use (partial settlement etc.)
+  // and it does not affect the on-chain settle for the exact scheme.
+  let settleResult: Awaited<ReturnType<HTTPServer["processSettlement"]>>
   try {
-    settlement = await input.payment.server.settlePayment(input.payment.payload, input.payment.matched)
+    settleResult = await input.payment.http.processSettlement(
+      input.payment.payload,
+      input.payment.matched,
+      undefined,
+      { request: { adapter: null as never, path: input.endpoint, method: "POST" }, responseBody: Buffer.alloc(0), responseHeaders: {} },
+    )
   } catch {
     await createDurableEvent({
       tenantId: input.tenant.id,
@@ -325,12 +380,13 @@ export async function settleV1Payment(input: {
     }).catch(() => undefined)
     throw new ApiError("payment_settlement_failed", "Payment processing failed", 502)
   }
-  // OKX async settlement: status="pending" means the tx was submitted and will confirm
-  // on-chain. Only reject if success=false OR if the status is explicitly "timeout".
-  if (!settlement.success || settlement.status === "timeout") {
+  if (!settleResult.success) {
     throw new ApiError("payment_settlement_failed", "Payment did not settle", 502)
   }
-  const settlementHeader = Buffer.from(JSON.stringify(settlement)).toString("base64")
+  const settlementHeader = settleResult.headers["PAYMENT-RESPONSE"]
+  if (!settlementHeader) {
+    throw new ApiError("payment_settlement_failed", "Settlement header missing", 502)
+  }
   const db = requireServerSupabase()
   const { error } = await db.from("v1_payments").insert({
     tenant_id: input.tenant.id,
@@ -339,7 +395,7 @@ export async function settleV1Payment(input: {
     payer_wallet: input.tenant.walletAddress,
     payment_payload_hash: input.payment.paymentPayloadHash,
     request_hash: input.requestHash,
-    settlement,
+    settlement: settleResult,
     settlement_header: settlementHeader,
     amount: input.payment.price.replace(/^\$/, ""),
     currency: "USDT",
@@ -379,12 +435,6 @@ export async function settleV1Payment(input: {
   return { settlementHeader, paymentPayloadHash: input.payment.paymentPayloadHash }
 }
 
-/**
- * Record the outcome of a paid operation against its payment proof, so that a
- * retry of the same proof replays this response rather than repeating the
- * provider call. Failures are stored too: a settled payment whose handler
- * failed must not be silently retried into a second provider charge.
- */
 export async function recordPaidResponse(
   paymentPayloadHash: string,
   status: number,
@@ -406,3 +456,6 @@ export async function recordPaidResponse(
     )
   }
 }
+
+// Re-export the schema helper for tests that verify it did not regress.
+export { bodySchema }
