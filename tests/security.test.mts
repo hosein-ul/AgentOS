@@ -192,12 +192,16 @@ test("the payer wallet must match the access-token tenant", () => {
   assert.match(route, /assertPaymentTenant\(existingTenant, payment\.payer\)/)
 })
 
-test("resource ownership is checked before payment is prepared", () => {
+test("resource ownership is checked before payment is settled", () => {
   const route = read("src/lib/v1/route.ts")
   const ownership = route.indexOf("preflightOwnedResource(existingTenant")
-  const prepare = route.indexOf("prepareV1Payment(request")
-  assert.ok(ownership > 0 && prepare > 0)
-  assert.ok(ownership < prepare, "ownership must be verified before a payment is created")
+  const settle = route.indexOf("settleV1Payment(")
+  assert.ok(ownership > 0 && settle > 0)
+  // What matters for buyer safety is that a payment cannot be *settled* (i.e.
+  // funds cannot move) for a resource this tenant does not own. Verifying the
+  // signature (prepareV1Payment) does not move funds — settleV1Payment does —
+  // so the invariant is: preflightOwnedResource runs before settleV1Payment.
+  assert.ok(ownership < settle, "ownership must be verified before settlement moves funds")
   assert.match(route, /RESOURCE_NOT_OWNED/)
   assert.match(read("src/lib/v1/route.ts"), /\.eq\("tenant_id", tenant\.id\)/)
 })

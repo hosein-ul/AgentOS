@@ -4,6 +4,7 @@ import {
   alreadyIssuedAuthentication,
   assertPaymentTenant,
   claimBootstrapTokenIssuance,
+  findTenantByWallet,
   getOrCreateTenant,
   getTenantById,
   issueAccessToken,
@@ -25,7 +26,7 @@ function onboardingRequired(endpoint: string) {
   return NextResponse.json({
     error: {
       code: "ONBOARDING_REQUIRED",
-      message: "Create your first AgentOS resource before using this service.",
+      message: "This wallet has no AgentOS resources yet. Pay the startHere service below first — that call also links this wallet to a tenant, and future paid calls on the same wallet are recognized automatically.",
       service: area ?? null,
       startHere: startHere ? {
         serviceId: startHere.id,
@@ -295,14 +296,28 @@ export async function v1Paid(
       return (await v1PaymentChallenge(endpoint, price, description)).response
     }
 
-    if (!bearer && !startHere) return onboardingRequired(endpoint)
     const body = await readPaidBody(request, endpoint)
     preflightCatalogInput(endpoint, body)
-    const bootstrap = !bearer && startHere
-    const existingTenant = bootstrap ? null : await requireTenant(request)
-    if (existingTenant) await preflightOwnedResource(existingTenant, endpoint, body)
+
+    // A tenant can be identified in three ways, in order of trust:
+    //   1. bearer access token (traditional API client, HTTP-native flow)
+    //   2. verified payment wallet from x402 (OKX buyer flow, which has no
+    //      way to attach a custom header) — recognised once that wallet has
+    //      an AgentOS tenant record from a prior paid provisioning
+    //   3. brand-new wallet bootstrapping the first startHere provisioning
+    //
+    // For (2) the payment must be verified before we can trust the payer, so
+    // prepareV1Payment runs first and the wallet-based tenant lookup happens
+    // against its verified payer field.
+    const tenantFromBearer = bearer ? await requireTenant(request) : null
     const payment = await prepareV1Payment(request, endpoint, price, description)
     if (payment.kind === "blocked") return payment.response
+    const payerWallet = payment.kind === "settled" ? payment.payer : payment.payer
+    const tenantFromWallet = tenantFromBearer ? null : await findTenantByWallet(payerWallet)
+    const existingTenant = tenantFromBearer ?? tenantFromWallet
+    const bootstrap = !existingTenant && startHere
+    if (!existingTenant && !startHere) return onboardingRequired(endpoint)
+    if (existingTenant) await preflightOwnedResource(existingTenant, endpoint, body)
 
     const bodyHash = requestHash(body)
 

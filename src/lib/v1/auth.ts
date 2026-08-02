@@ -38,6 +38,28 @@ export async function getOrCreateTenant(walletAddress: string): Promise<Tenant> 
   return { id: data.id, walletAddress: data.wallet_address }
 }
 
+/**
+ * Look up an existing tenant by its verified payment wallet. Returns null when
+ * the wallet has never provisioned an AgentOS resource; a paid call from an
+ * unknown wallet still has to go through startHere onboarding before it can
+ * touch other services.
+ *
+ * Used by the paid path so an x402 client that has no way to attach a bearer
+ * header (the OKX buyer flow) can still be recognized as onboarded when the
+ * signed payer wallet matches an existing tenant.
+ */
+export async function findTenantByWallet(walletAddress: string): Promise<Tenant | null> {
+  const wallet = normalizeWallet(walletAddress)
+  if (!wallet) return null
+  const { data, error } = await requireServerSupabase()
+    .from("v1_users")
+    .select("id,wallet_address")
+    .eq("wallet_address", wallet)
+    .maybeSingle()
+  if (error || !data) return null
+  return { id: data.id, walletAddress: data.wallet_address }
+}
+
 export async function getTenantById(tenantId: string): Promise<Tenant> {
   const { data, error } = await requireServerSupabase()
     .from("v1_users")
